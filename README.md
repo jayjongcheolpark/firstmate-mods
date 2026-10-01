@@ -23,24 +23,22 @@ claude --plugin-dir /path/to/firstmate-mods/plugins/fleet-lamp
 
 A band above the prompt that tells you when the fleet needs a human. You don't need a lamp.
 
-```
-● fix-login needs-decision: pick: keep the legacy session cookie (A) or move to JWT (B)?  +1 more
-────────────────────────────────────────────────────────────────────────────────────────────────
-❯
-```
+A task needs a decision (red), with one more open red behind it:
 
-```
-● PR ready https://github.com/acme/webapp/pull/7  fix-login
-────────────────────────────────────────────────────────────────────────────────────────────────
-❯
-```
+![The fleet-lamp band in red: a red dot, then "fix-login needs-decision: keep session cookie (A) or move to JWT (B)?  +1 more"](plugins/fleet-lamp/docs/band-red.png)
+
+A PR is ready for review (green):
+
+![The fleet-lamp band in green: a green dot, then "PR ready https://github.com/acme/webapp/pull/7  fix-login"](plugins/fleet-lamp/docs/band-green.png)
+
+Both images come from a live session at 90 columns: the terminal screen the session drew, rendered with a dark palette. The band draws its dot in the theme's `error` color for red and its `success` color for green, and draws the task (or `PR ready`) in bold.
 
 When nothing needs you, the band shows nothing.
 
 ### What it shows
 
-- **Red** (strongest): a task is waiting on you. The band shows the task, its state and the first line of its reason. The newest open red comes first, and `+N more` counts the others.
-- **Green**: a PR is ready for review. The band shows the PR URL and its task.
+- 🔴 **Red** (strongest): a task is waiting on you. The band shows the task, its state and the first line of its reason. The newest open red comes first, and `+N more` counts the others.
+- 🟢 **Green**: a PR is ready for review. The band shows the PR URL and its task.
 - **Nothing**: the fleet doesn't need you.
 
 ### The rules
