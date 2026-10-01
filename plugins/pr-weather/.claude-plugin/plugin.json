@@ -1,0 +1,40 @@
+{
+  "name": "pr-weather",
+  "version": "0.1.0",
+  "description": "The CI weather of your firstmate fleet's open PRs, one glyph per PR in the band above the prompt",
+  "author": { "name": "Jay Park" },
+  "homepage": "https://github.com/jayjongcheolpark/firstmate-mods",
+  "repository": "https://github.com/jayjongcheolpark/firstmate-mods",
+  "license": "MIT",
+  "keywords": ["firstmate", "pull-requests", "ci", "github"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "source": {
+      "type": "string",
+      "title": "PR source",
+      "description": "fleet: the PRs in the firstmate fleet ledger (shown in firstmate sessions). mine: your open PRs in the session's repository (shown in any git repository).",
+      "options": ["fleet", "mine"],
+      "default": "fleet"
+    },
+    "mode": {
+      "type": "string",
+      "title": "Refresh mode",
+      "description": "auto: refresh on the interval below. manual: load once when the session starts, then refresh only from the band's refresh button or /pr-weather refresh. The band's mode button overrides this until you change it here.",
+      "options": ["auto", "manual"],
+      "default": "auto"
+    },
+    "refreshMinutes": {
+      "type": "number",
+      "title": "Refresh every (minutes)",
+      "description": "How often auto mode asks GitHub for fresh PR weather. It waits longer while the GitHub quota is low.",
+      "default": 3,
+      "min": 1
+    },
+    "home": {
+      "type": "string",
+      "title": "Firstmate home",
+      "description": "The firstmate home whose fleet ledger to read (fleet source). Empty: the nearest one at or above the session's working directory. When set, the band shows in every session.",
+      "default": ""
+    }
+  }
+}
