@@ -1,6 +1,6 @@
 {
   "name": "fleet-lamp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A lamp above the prompt: red when the firstmate fleet needs you, green when a PR is ready.",
   "author": { "name": "Jay Park" },
   "homepage": "https://github.com/jayjongcheolpark/firstmate-mods",
@@ -14,6 +14,12 @@
       "title": "Firstmate home",
       "description": "The firstmate home whose fleet ledger to follow. Empty: the nearest one at or above the session's working directory.",
       "default": ""
+    },
+    "includeSecondMates": {
+      "type": "boolean",
+      "title": "Include second mates",
+      "description": "Also follow the fleet ledgers of the second mate homes registered in the firstmate home's data/secondmates.md that exist on this machine.",
+      "default": true
     }
   }
 }

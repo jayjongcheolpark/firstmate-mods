@@ -16,16 +16,26 @@ type LedgerRecord = Readonly<Record<string, unknown>>
 
 const text = (value: unknown): string => (typeof value === 'string' ? value : '')
 
-/** The one-line reason a red shows: the status text, whitespace folded. */
-const reasonOf = (value: string): string => value.replace(/\s+/g, ' ').trim()
+// A status line's own lead, `<state> [key=...] [at=...] [corr=...]:`, which the band already says.
+const STATUS_TAGS = /^(?:\s*\[[^\]]*\])*\s*:\s*/
 
-/** Folds one ledger record into the latch; records it does not recognize leave it as it was. */
-export function apply(latch: Latch, record: LedgerRecord): Latch {
+/** The one-line reason a red shows: the status text without its status-line lead, whitespace folded. */
+function reasonOf(value: string, state: string): string {
+  const folded = value.replace(/\s+/g, ' ').trim()
+  if (!folded.startsWith(state)) {
+    return folded
+  }
+  const tags = STATUS_TAGS.exec(folded.slice(state.length))
+  return tags === null ? folded : folded.slice(state.length + tags[0].length).trim()
+}
+
+/** Folds one record of `home`'s ledger into the latch; records it does not recognize leave it as it was. */
+export function apply(latch: Latch, record: LedgerRecord, home: string): Latch {
   const task = text(record.task)
   const ts = typeof record.ts === 'number' ? record.ts : 0
 
   if (record.event === 'task.pr_ready') {
-    return addGreen(latch, { task, pr: text(record.pr) || null, ts })
+    return addGreen(latch, { home, task, pr: text(record.pr) || null, ts })
   }
   if (record.event !== 'task.status') {
     return latch
@@ -38,22 +48,22 @@ export function apply(latch: Latch, record: LedgerRecord): Latch {
   if (state === 'resolved') {
     return key === null
       ? latch
-      : { ...latch, reds: latch.reds.filter(red => !(red.task === task && red.key === key)) }
+      : { ...latch, reds: latch.reds.filter(red => !(red.home === home && red.task === task && red.key === key)) }
   }
   if (RED_STATES.has(state) && !body.includes('ask-user findings=') && !CAPTAIN_ANSWER.test(body)) {
-    return addRed(latch, { task, key, state, reason: reasonOf(body), ts })
+    return addRed(latch, { home, task, key, state, reason: reasonOf(body, state), ts })
   }
   if (state === 'done' && GREEN_PATTERNS.some(pattern => pattern.test(body)) && !LANDED.test(body)) {
-    return addGreen(latch, { task, pr: body.match(URL)?.[0] ?? null, ts })
+    return addGreen(latch, { home, task, pr: body.match(URL)?.[0] ?? null, ts })
   }
   return latch
 }
 
-/** Parses appended ledger text, complete lines only, and folds each record in order. */
-export function applyLines(latch: Latch, lines: string): Latch {
+/** Parses text appended to `home`'s ledger, complete lines only, and folds each record in order. */
+export function applyLines(latch: Latch, lines: string, home: string): Latch {
   return lines.split('\n').reduce((next, line) => {
     const record = parse(line)
-    return record === null ? next : apply(next, record)
+    return record === null ? next : apply(next, record, home)
   }, latch)
 }
 
@@ -72,12 +82,15 @@ function parse(line: string): LedgerRecord | null {
 // The ledger delivers at least once, so a repeated record replaces its twin rather than stacking.
 function addRed(latch: Latch, red: RedSignal): Latch {
   const isSame = (other: RedSignal) =>
-    other.task === red.task && (red.key === null ? other.key === null && other.reason === red.reason : other.key === red.key)
+    other.home === red.home &&
+    other.task === red.task &&
+    (red.key === null ? other.key === null && other.reason === red.reason : other.key === red.key)
   return { ...latch, reds: [...latch.reds.filter(other => !isSame(other)), red] }
 }
 
 function addGreen(latch: Latch, green: GreenSignal): Latch {
-  const isSame = (other: GreenSignal) => (green.pr === null ? other.pr === null && other.task === green.task : other.pr === green.pr)
+  const isSame = (other: GreenSignal) =>
+    green.pr === null ? other.pr === null && other.home === green.home && other.task === green.task : other.pr === green.pr
   return { ...latch, greens: [...latch.greens.filter(other => !isSame(other)), green] }
 }
 

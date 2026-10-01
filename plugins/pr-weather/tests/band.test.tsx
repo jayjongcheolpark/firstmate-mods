@@ -20,6 +20,10 @@ const view7 = (checks: object[] = [success]) =>
   ok(JSON.stringify({ number: 7, url: url(7), state: 'OPEN', isDraft: false, headRefOid: 'sha7', statusCheckRollup: checks }))
 const noRuns = ok('{"workflow_runs":[]}')
 const noQuota = ok('{"resources":{}}')
+const MATE = '/home/me/fm-ce'
+const entry = (id: string, home: string) => `- ${id} - Own ${id} work. (home: ${home}; scope: ${id}; projects: ${id}; added 2026-08-05)`
+const remoteEntry = (id: string, home: string) =>
+  `- ${id} - Own ${id} work. (host: box; root: /srv; home: ${home}; scope: ${id}; projects: ${id}; added 2026-08-05)`
 
 type View = { state?: string; isDraft?: boolean; checks?: object[]; held?: boolean }
 
@@ -28,6 +32,10 @@ type World = {
   isRepo?: boolean
   hasLedger?: boolean
   ledger?: string[]
+  // Second mate homes on this machine and their ledger lines; null: no ledger there.
+  mates?: Record<string, string[] | null>
+  // data/secondmates.md in the home; absent: no file.
+  registry?: string
   views?: Record<number, View>
   // What gh api rate_limit reports, of a limit of 5000.
   quota?: { remaining: number; resetAt: number }
@@ -51,7 +59,18 @@ function world(on: On, w: World) {
   on('fs.ancestors', () => ({
     value: w.isFirstmate === false ? [] : [{ dir: HOME, name: 'AGENTS.md', content: '# Firstmate\n\nThe supervisor contract.', parts: [] }],
   }))
-  on('fs.exists', ($, e) => ({ value: e.path === `${HOME}/state` || (e.path === LEDGER && w.hasLedger !== false) }))
+  const mates = w.mates ?? {}
+  const ledgers: Record<string, string[] | undefined> = { [LEDGER]: w.hasLedger === false ? undefined : (w.ledger ?? []) }
+  for (const [home, lines] of Object.entries(mates)) ledgers[`${home}/state/fleet-ledger.jsonl`] = lines ?? undefined
+  on('fs.exists', ($, e) => ({ value: e.path === `${HOME}/state` || e.path in mates || ledgers[e.path] !== undefined }))
+  on('fs.stat', ($, e) => {
+    if (!(e.path in mates)) throw new Error(`ENOENT: ${e.path}`)
+    return { value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: false } }
+  })
+  on('fs.read', ($, e) => {
+    if (e.path !== `${HOME}/data/secondmates.md` || w.registry === undefined) throw new Error(`ENOENT: ${e.path}`)
+    return { value: w.registry }
+  })
   on('ui.log', ($, e) => {
     logs.push(e.text)
     return { value: undefined }
@@ -62,7 +81,10 @@ function world(on: On, w: World) {
   })
   const answer = async (argv: readonly string[]): Promise<ProcessRunResult> => {
     runs.push([...argv])
-    if (argv[0] === 'grep') return w.ledger?.length ? ok(w.ledger.join('\n') + '\n') : exit(1)
+    if (argv[0] === 'grep') {
+      const lines = ledgers[argv.at(-1) ?? '']
+      return lines?.length ? ok(lines.join('\n') + '\n') : exit(1)
+    }
     if (argv[0] === 'git') return w.isRepo === false ? exit(128) : ok('true\n')
     if (argv[0] !== 'gh') throw new Error(`unexpected ${argv.join(' ')}`)
     if (w.gh) return w.gh(argv)
@@ -427,5 +449,59 @@ describe('setup', () => {
     await clock.settle()
     expect((await band($)).weather).toBe(undefined)
     expect(runs.map(argv => argv[0])).toEqual(['git'])
+  })
+})
+
+describe('second mate homes', () => {
+  const registry = [entry('constructease', MATE), entry('gone', '/home/me/gone'), remoteEntry('far', '/home/me/far')].join('\n')
+
+  test('unions the PRs of the home and its second mates, each once', async ($, on) => {
+    const { clock, runs } = world(on, {
+      ledger: [ready('a', 7), ready('b', 8)],
+      registry,
+      mates: { [MATE]: [ready('ce-po', 9), ready('ce-dup', 8)] },
+    })
+    await start($)
+    await clock.settle()
+    expect((await band($)).weather).toBe('PRs ☀ #7 ☀ #8 ☀ #9 updated just now')
+    expect(runs.filter(argv => argv[2] === 'view').map(argv => argv[3])).toEqual([url(7), url(8), url(9)])
+    expect(runs.filter(argv => argv[0] === 'grep').map(argv => argv.at(-1))).toEqual([LEDGER, `${MATE}/state/fleet-ledger.jsonl`])
+  })
+
+  test('a second mate without a ledger is noted once and skipped', async ($, on) => {
+    const { clock, logs } = world(on, { ledger: [ready('a', 7)], registry, mates: { [MATE]: null } })
+    await start($)
+    await clock.settle()
+    await clock.advance(9 * MINUTE)
+    expect((await band($)).weather).toBe('PRs ☀ #7 updated just now')
+    expect(logs).toEqual([`second mate constructease has no fleet ledger, so its PRs are left out: touch ${MATE}/config/fleet-ledger`])
+  })
+
+  test('with the main ledger off the second mates still show, and the main hint is logged once', async ($, on) => {
+    const { clock, logs } = world(on, { hasLedger: false, registry, mates: { [MATE]: [ready('ce-po', 9)] } })
+    await start($)
+    await clock.settle()
+    await clock.advance(9 * MINUTE)
+    expect((await band($)).weather).toBe('PRs ☀ #9 updated just now')
+    expect(logs).toEqual([`turn on firstmate's fleet ledger to see the fleet's PRs: touch ${HOME}/config/fleet-ledger`])
+  })
+
+  test('a second mate registered mid-session shows on the next refresh', async ($, on) => {
+    const w: World = { ledger: [ready('a', 7)], mates: { [MATE]: [ready('ce-po', 9)] } }
+    const { clock } = world(on, w)
+    await start($)
+    await clock.settle()
+    expect((await band($)).weather).toBe('PRs ☀ #7 updated just now')
+    w.registry = entry('constructease', MATE)
+    await clock.advance(3 * MINUTE)
+    expect((await band($)).weather).toBe('PRs ☀ #7 ☀ #9 updated just now')
+  })
+
+  test('includeSecondMates off reads the home alone', { options: { includeSecondMates: false } }, async ($, on) => {
+    const { clock, runs } = world(on, { ledger: [ready('a', 7)], registry, mates: { [MATE]: [ready('ce-po', 9)] } })
+    await start($)
+    await clock.settle()
+    expect((await band($)).weather).toBe('PRs ☀ #7 updated just now')
+    expect(runs.filter(argv => argv[0] === 'grep').map(argv => argv.at(-1))).toEqual([LEDGER])
   })
 })

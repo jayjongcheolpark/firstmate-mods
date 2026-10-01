@@ -5,6 +5,11 @@ import type { Engine } from 'claude-code/testing'
 const HOME = '/work/fm'
 const LEDGER = `${HOME}/state/fleet-ledger.jsonl`
 const FLAG = `${HOME}/config/fleet-ledger`
+const MATE = '/work/ce'
+const MATE_LEDGER = `${MATE}/state/fleet-ledger.jsonl`
+const MATE_FLAG = `${MATE}/config/fleet-ledger`
+const REGISTRY = `${HOME}/data/secondmates.md`
+const entry = (id: string, home: string) => `- ${id} - Own ${id} work. (home: ${home}; scope: ${id}; projects: ${id}; added 2026-08-05)\n`
 const SURFACES = ['terminal', 'desktop'] as const
 const BAND = {
   plugin: 'fleet-lamp',
@@ -27,6 +32,12 @@ function world(on: On, files: Record<string, string>) {
     const isFile = e.path in files
     const size = isFile ? encoder.encode(files[e.path] ?? '').length : 0
     return { value: { kind: isFile ? 'file' : 'dir', size, mtimeMs: 0, isLink: false } }
+  })
+  on('fs.read', ($, e) => {
+    if (!(e.path in files)) {
+      throw new Error(`ENOENT: ${e.path}`)
+    }
+    return { value: files[e.path] ?? '' }
   })
   on('fs.ancestors', () => ({
     value: [
@@ -53,12 +64,14 @@ function world(on: On, files: Record<string, string>) {
   on('prompt.submit', ($, e) => ({ text: e.text, origin: e.origin }))
   mock.store(on)
   const clock = mock.clock(on)
+  const appendTo = (ledger: string, ...records: object[]) => {
+    files[ledger] = (files[ledger] ?? '') + records.map(record => `${JSON.stringify(record)}\n`).join('')
+  }
   return {
     logs,
     clock,
-    append: (...records: object[]) => {
-      files[LEDGER] = (files[LEDGER] ?? '') + records.map(record => `${JSON.stringify(record)}\n`).join('')
-    },
+    append: (...records: object[]) => appendTo(LEDGER, ...records),
+    appendTo,
   }
 }
 
@@ -163,5 +176,99 @@ describe('the band', () => {
     files['/elsewhere/fm/state/fleet-ledger.jsonl'] += `${JSON.stringify(status('t', 'failed', ' boom'))}\n`
     await fm.clock.advance(2000)
     expect((await bandText($))[0]).toBe('● t failed: boom')
+  })
+})
+
+describe('second mate homes', () => {
+  test('follows a second mate ledger from its end and names the home a red came from', async ($, on) => {
+    const files: Record<string, string> = { [FLAG]: '', [LEDGER]: '', [MATE_FLAG]: '', [REGISTRY]: entry('constructease', MATE) }
+    const fm = world(on, files)
+    fm.appendTo(MATE_LEDGER, status('old', 'blocked', ' from yesterday'))
+    await start($)
+    expect(await bandText($)).toEqual(['', ''])
+
+    fm.appendTo(MATE_LEDGER, status('ce-po', 'needs-decision', ' pick a vendor'))
+    await fm.clock.advance(2000)
+    expect(await bandText($)).toEqual(Array(2).fill('● constructease ce-po needs-decision: pick a vendor'))
+
+    fm.append(status('api', 'failed', ' tests red'))
+    await fm.clock.advance(2000)
+    expect((await bandText($))[0]).toBe('● main api failed: tests red  +1 more')
+
+    await prompt($, 'composer')
+    expect(await bandText($)).toEqual(['', ''])
+
+    fm.appendTo(MATE_LEDGER, { v: 1, ts: 2, event: 'task.pr_ready', task: 'ce-po', pr: 'https://github.com/acme/ce/pull/3' })
+    await fm.clock.advance(2000)
+    expect((await bandText($))[0]).toBe('● constructease PR ready https://github.com/acme/ce/pull/3  ce-po')
+  })
+
+  test('keeps an offset per home, so one ledger truncating rereads only that one', async ($, on) => {
+    const files: Record<string, string> = { [FLAG]: '', [MATE_FLAG]: '', [REGISTRY]: entry('constructease', MATE) }
+    const fm = world(on, files)
+    fm.append(status('old', 'working', ' a long main history line'))
+    fm.appendTo(MATE_LEDGER, status('old', 'working', ' a long second mate history line'))
+    await start($)
+    files[MATE_LEDGER] = ''
+    fm.appendTo(MATE_LEDGER, status('ce', 'blocked', ' x'))
+    await fm.clock.advance(2000)
+    expect((await bandText($))[0]).toBe('● constructease ce blocked: x')
+    fm.append(status('api', 'blocked', ' y'))
+    await fm.clock.advance(2000)
+    expect((await bandText($))[0]).toBe('● main api blocked: y  +1 more')
+  })
+
+  test('with only the main home followed, the band names no home', async ($, on) => {
+    const files: Record<string, string> = { [FLAG]: '', [LEDGER]: '', [REGISTRY]: entry('gone', '/work/gone') }
+    const fm = world(on, files)
+    await start($)
+    fm.append(status('api', 'failed', ' tests red'))
+    await fm.clock.advance(2000)
+    expect((await bandText($))[0]).toBe('● api failed: tests red')
+  })
+
+  test('a second mate with its ledger off is noted once and not followed', async ($, on) => {
+    const files: Record<string, string> = { [FLAG]: '', [LEDGER]: '', [MATE_LEDGER]: '', [REGISTRY]: entry('constructease', MATE) }
+    const fm = world(on, files)
+    await start($)
+    fm.appendTo(MATE_LEDGER, status('ce', 'blocked', ' x'))
+    await fm.clock.advance(6000)
+    expect(await bandText($)).toEqual(['', ''])
+    expect(fm.logs).toEqual([
+      `the fleet ledger is off in second mate constructease (${MATE}), so the lamp does not follow it; turn it on with: touch ${MATE_FLAG}`,
+    ])
+  })
+
+  test('the second mates are followed even while the main ledger is off', async ($, on) => {
+    const files: Record<string, string> = { [LEDGER]: '', [MATE_FLAG]: '', [MATE_LEDGER]: '', [REGISTRY]: entry('constructease', MATE) }
+    const fm = world(on, files)
+    await start($)
+    fm.appendTo(MATE_LEDGER, status('ce', 'blocked', ' x'))
+    await fm.clock.advance(2000)
+    expect((await bandText($))[0]).toBe('● ce blocked: x')
+    expect(fm.logs.filter(text => text.includes(`touch ${FLAG}`))).toHaveLength(1)
+  })
+
+  test('a second mate registered mid-session is followed within a minute', async ($, on) => {
+    const files: Record<string, string> = { [FLAG]: '', [LEDGER]: '', [MATE_FLAG]: '', [MATE_LEDGER]: '' }
+    const fm = world(on, files)
+    await start($)
+    files[REGISTRY] = entry('constructease', MATE)
+    await fm.clock.advance(60_000)
+    fm.appendTo(MATE_LEDGER, status('ce', 'blocked', ' x'))
+    await fm.clock.advance(2000)
+    expect((await bandText($))[0]).toBe('● constructease ce blocked: x')
+  })
+
+  test('includeSecondMates off follows the main home alone', { options: { includeSecondMates: false } }, async ($, on) => {
+    const files: Record<string, string> = { [FLAG]: '', [LEDGER]: '', [MATE_FLAG]: '', [MATE_LEDGER]: '', [REGISTRY]: entry('constructease', MATE) }
+    const fm = world(on, files)
+    await start($)
+    fm.appendTo(MATE_LEDGER, status('ce', 'blocked', ' x'))
+    await fm.clock.advance(2000)
+    expect(await bandText($)).toEqual(['', ''])
+    fm.append(status('api', 'failed', ' tests red'))
+    await fm.clock.advance(2000)
+    expect((await bandText($))[0]).toBe('● api failed: tests red')
   })
 })

@@ -13,7 +13,8 @@ const status = (task: string, state: string, text: string, key: string | null = 
   text,
 })
 const prReady = (task: string, pr: string) => ({ v: 1, ts: 1790133410, event: 'task.pr_ready', task, pr })
-const fold = (...records: Record<string, unknown>[]): Latch => records.reduce<Latch>((latch, record) => apply(latch, record), EMPTY)
+const HOME = '/work/fm'
+const fold = (...records: Record<string, unknown>[]): Latch => records.reduce<Latch>((latch, record) => apply(latch, record, HOME), EMPTY)
 
 describe('red', () => {
   for (const state of ['needs-decision', 'blocked', 'failed']) {
@@ -21,7 +22,7 @@ describe('red', () => {
       const lamp = lampOf(fold(status('fix-login', state, ' pick A or B')))
       expect(lamp).toEqual({
         color: 'red',
-        signal: { task: 'fix-login', key: null, state, reason: 'pick A or B', ts: 1790133400 },
+        signal: { home: HOME, task: 'fix-login', key: null, state, reason: 'pick A or B', ts: 1790133400 },
         count: 1,
       })
     })
@@ -43,14 +44,14 @@ describe('red', () => {
   test('a keyed red turns off when a resolved record carries the same task and key', () => {
     const open = fold(status('a', 'needs-decision', ' A or B?', 'pick'))
     expect(lampOf(open)?.color).toBe('red')
-    expect(lampOf(apply(open, status('a', 'resolved', ' A', 'other')))?.color).toBe('red')
-    expect(lampOf(apply(open, status('b', 'resolved', ' A', 'pick')))?.color).toBe('red')
-    expect(lampOf(apply(open, status('a', 'resolved', ' A', 'pick')))).toBe(null)
+    expect(lampOf(apply(open, status('a', 'resolved', ' A', 'other'), HOME))?.color).toBe('red')
+    expect(lampOf(apply(open, status('b', 'resolved', ' A', 'pick'), HOME))?.color).toBe('red')
+    expect(lampOf(apply(open, status('a', 'resolved', ' A', 'pick'), HOME))).toBe(null)
   })
 
   test('a keyless resolved record leaves a keyless red on', () => {
     const open = fold(status('a', 'blocked', ' no daemon'))
-    expect(lampOf(apply(open, status('a', 'resolved', ' daemon back')))?.color).toBe('red')
+    expect(lampOf(apply(open, status('a', 'resolved', ' daemon back'), HOME))?.color).toBe('red')
   })
 
   test('the newest open red shows first, with the count', () => {
@@ -63,6 +64,26 @@ describe('red', () => {
     expect(lampOf(fold(record, record))?.count).toBe(1)
   })
 
+  for (const [text, reason] of [
+    ['needs-decision [key=lamp-test-3]: TEST - fleet-lamp check, not a real decision', 'TEST - fleet-lamp check, not a real decision'],
+    ['needs-decision [key=pick] [at=1790898573] [corr=ab12]: keep A or B?', 'keep A or B?'],
+    ['needs-decision [at=1790898573]: keep A or B?', 'keep A or B?'],
+    ['needs-decision: keep A or B?', 'keep A or B?'],
+    [' keep A or B: the needs-decision is yours', 'keep A or B: the needs-decision is yours'],
+    ['needs-decisions pile up: keep A or B?', 'needs-decisions pile up: keep A or B?'],
+  ] as const) {
+    test(`the reason drops the status-line lead: ${text}`, () => {
+      expect(lampOf(fold(status('t', 'needs-decision', text)))?.signal).toMatchObject({ reason })
+    })
+  }
+
+  test('a resolved record closes only the red of its own home', () => {
+    const open = apply(apply(EMPTY, status('a', 'needs-decision', ' A or B?', 'pick'), HOME), status('a', 'needs-decision', ' A or B?', 'pick'), '/work/mate')
+    expect(open.reds).toHaveLength(2)
+    const closed = apply(open, status('a', 'resolved', ' A', 'pick'), '/work/mate')
+    expect(closed.reds.map(red => red.home)).toEqual([HOME])
+  })
+
   test('red outranks green', () => {
     expect(lampOf(fold(prReady('a', 'https://x/pull/1'), status('b', 'blocked', ' stuck')))?.color).toBe('red')
   })
@@ -72,7 +93,7 @@ describe('green', () => {
   test('a task.pr_ready record turns it green with the PR', () => {
     expect(lampOf(fold(prReady('fix-login', 'https://github.com/acme/webapp/pull/7')))).toEqual({
       color: 'green',
-      signal: { task: 'fix-login', pr: 'https://github.com/acme/webapp/pull/7', ts: 1790133410 },
+      signal: { home: HOME, task: 'fix-login', pr: 'https://github.com/acme/webapp/pull/7', ts: 1790133410 },
       count: 1,
     })
   })
@@ -114,6 +135,6 @@ describe('ledger lines', () => {
       JSON.stringify(status('a', 'blocked', ' stuck')),
       '',
     ].join('\n')
-    expect(lampOf(applyLines(EMPTY, lines))?.signal).toMatchObject({ task: 'a', reason: 'stuck' })
+    expect(lampOf(applyLines(EMPTY, lines, HOME))?.signal).toMatchObject({ task: 'a', reason: 'stuck' })
   })
 })
