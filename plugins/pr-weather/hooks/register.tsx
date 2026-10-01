@@ -33,7 +33,8 @@ const DEBOUNCE_MS = 30_000
 
 const TIMEOUT_MS = 30_000
 const PR_FIELDS = 'number,url,state,isDraft,headRefOid,statusCheckRollup'
-const LEDGER_EVENTS = '"event": *"task\\.(pr_ready|merged|cleaned_up)"'
+// The records prsFromLedger folds: PR events, and done statuses that name a PR.
+const LEDGER_EVENTS = '"event": *"task\\.(pr_ready|merged|cleaned_up)"|"state": *"done".*https://[^"]*/pull/[0-9]+'
 
 // Nothing to show until the person sets something up; the message says what.
 class SetupNeeded extends Error {}
@@ -112,9 +113,11 @@ async function ledgerUrls($: EngineInterface, home: string): Promise<string[] | 
   const ledger = `${home}/state/fleet-ledger.jsonl`
   if (!(await $.fs.exists(ledger))) return null
   // grep rather than $.fs.read: the ledger never rotates and can outgrow one read.
-  const { exitCode, stdout, stderr } = await $.process.run(['grep', '-E', LEDGER_EVENTS, ledger], { timeoutMs: TIMEOUT_MS })
+  const { exitCode, stdout, stderr, isStdoutTruncated } = await $.process.run(['grep', '-E', LEDGER_EVENTS, ledger], { timeoutMs: TIMEOUT_MS })
   if (exitCode === 1) return []
   if (exitCode !== 0) throw new Error(`grep exited ${exitCode}: ${stderr}`)
+  // A cut answer would miss the newest records, removals among them.
+  if (isStdoutTruncated) throw new Error(`the PR records of ${ledger} pass 4 MiB`)
   return prsFromLedger(stdout)
 }
 

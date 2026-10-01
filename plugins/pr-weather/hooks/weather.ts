@@ -53,13 +53,20 @@ export function classifyRollup(items: readonly RollupItem[] | null | undefined):
   return 'passed'
 }
 
+// A done status that reports a ready PR, and one that reports it landed: fleet-lamp's green rule.
+const READY_PATTERNS = [/PR ready: https:\/\//, /^\s*PR https:\/\//, /child \S+ done: PR https:\/\//]
+const LANDED = /\b(landed|merged)\b/
+const PR_URL = /https:\/\/[^\s"]+\/pull\/\d+/
+
 // The fleet's PR URLs from fleet-ledger.jsonl text (docs/fleet-ledger.md in
-// firstmate): task.pr_ready sets the task's PR (a later one replaces it), and
-// task.merged or task.cleaned_up drops it. Torn or foreign lines are skipped.
+// firstmate): task.pr_ready, or a done task.status that reports a ready PR,
+// sets the task's PR (a later one replaces it); task.merged, task.cleaned_up,
+// or a done status that reports the PR landed or merged drops it. Torn or
+// foreign lines are skipped.
 export function prsFromLedger(text: string): string[] {
   const byTask = new Map<string, string>()
   for (const line of text.split('\n')) {
-    let record: { event?: unknown; task?: unknown; pr?: unknown }
+    let record: { event?: unknown; task?: unknown; pr?: unknown; state?: unknown; text?: unknown }
     try {
       record = JSON.parse(line)
     } catch {
@@ -70,6 +77,12 @@ export function prsFromLedger(text: string): string[] {
       byTask.set(record.task, record.pr)
     } else if (record.event === 'task.merged' || record.event === 'task.cleaned_up') {
       byTask.delete(record.task)
+    } else if (record.event === 'task.status' && record.state === 'done' && typeof record.text === 'string') {
+      const body = record.text
+      const url = PR_URL.exec(body)?.[0]
+      if (!url || !READY_PATTERNS.some(pattern => pattern.test(body))) continue
+      if (LANDED.test(body)) byTask.delete(record.task)
+      else byTask.set(record.task, url)
     }
   }
   return [...new Set(byTask.values())]

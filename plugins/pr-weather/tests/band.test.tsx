@@ -468,6 +468,15 @@ describe('second mate homes', () => {
     expect(runs.filter(argv => argv[0] === 'grep').map(argv => argv.at(-1))).toEqual([LEDGER, `${MATE}/state/fleet-ledger.jsonl`])
   })
 
+  test("a second mate's done reports count, and a closed PR is left out", async ($, on) => {
+    const done = (task: string, n: number) =>
+      JSON.stringify({ v: 1, ts: 1, event: 'task.status', task, state: 'done', key: null, text: ` PR ${url(n)} checks green, head abc` })
+    const { clock } = world(on, { ledger: [], registry, mates: { [MATE]: [done('ce-po', 9), done('ce-old', 3)] }, views: { 3: { state: 'MERGED' } } })
+    await start($)
+    await clock.settle()
+    expect((await band($)).weather).toBe('PRs ☀ #9 updated just now')
+  })
+
   test('a second mate without a ledger is noted once and skipped', async ($, on) => {
     const { clock, logs } = world(on, { ledger: [ready('a', 7)], registry, mates: { [MATE]: null } })
     await start($)

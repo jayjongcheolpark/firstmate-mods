@@ -109,6 +109,27 @@ describe('fleet ledger', () => {
     ].join('\n')
     expect(prsFromLedger(text)).toEqual([B])
   })
+  const done = (task: string, text: string) => line({ v: 1, ts: 1, event: 'task.status', task, state: 'done', key: null, text })
+  test('a done status reporting a ready PR sets the task PR, as fleet-lamp lights green', async () => {
+    const text = [
+      done('a', ` PR ${A} Google coordinate fetching removed, head 93a91cc70, CI success`),
+      done('a', ` PR ${A} backfill fallback removed, head 581fd0920`),
+      done('b', ` all set, PR ready: ${B}, checks green`),
+      done('c', ` child api done: PR ${C}`),
+    ].join('\n')
+    expect(prsFromLedger(text)).toEqual([A, B, C])
+  })
+  test('a done status reporting the PR landed or merged drops the task', async () => {
+    const text = [done('a', ` PR ${A}`), done('b', ` PR ${B}`), done('a', ` PR ${A} merged`), done('b', ` PR ready: ${B} landed on main`)].join('\n')
+    expect(prsFromLedger(text)).toEqual([])
+  })
+  test('a done status that only mentions a PR, or another state, leaves it alone', async () => {
+    const text = [
+      done('a', ` report written; see ${A} for context`),
+      line({ v: 1, ts: 1, event: 'task.status', task: 'b', state: 'working', key: null, text: ` PR ${B}` }),
+    ].join('\n')
+    expect(prsFromLedger(text)).toEqual([])
+  })
   test('torn lines, blank lines and unknown events are skipped', async () => {
     const text = [line({ event: 'task.status', task: 'a', state: 'done' }), '', line({ event: 'task.pr_ready', task: 'a', pr: A }), '{"v":1,"ev'].join('\n')
     expect(prsFromLedger(text)).toEqual([A])
