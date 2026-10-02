@@ -11,14 +11,14 @@
     {
       "name": "fleet-lamp",
       "description": "A lamp above the prompt: red when the firstmate fleet needs you, green when a PR is ready.",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "source": "./plugins/fleet-lamp",
       "category": "productivity"
     },
     {
       "name": "pr-weather",
       "description": "The CI weather of the firstmate fleet's open PRs, one glyph per PR above the prompt, with a refresh button and auto or manual refresh.",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "source": "./plugins/pr-weather",
       "category": "productivity"
     }

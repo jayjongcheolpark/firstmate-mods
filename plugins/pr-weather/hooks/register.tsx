@@ -1,6 +1,6 @@
 // The weather of the fleet's open PRs, one glyph each, in the band above the prompt.
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, Timer } from 'claude-code'
+import type { EngineInterface, Register, RenderSurface, Timer } from 'claude-code'
 
 import type { Mode, Pr, Status } from '../types'
 import {
@@ -19,6 +19,8 @@ import {
   terminalDrawsLinks,
 } from './weather'
 import type { Quota, RollupItem } from './weather'
+import { isPrUrl, openerFor } from './open'
+import type { Host } from './open'
 import { parseSecondMates } from './secondmates'
 import type { SecondMate } from './secondmates'
 
@@ -190,11 +192,42 @@ async function expandTilde($: EngineInterface, path: string): Promise<string> {
   return ((await $.env.get('HOME')) ?? '') + path.slice(1)
 }
 
+const OPEN_TIMEOUT_MS = 10_000
+
+async function readHost($: EngineInterface): Promise<Host> {
+  const system = await $.process
+    .run(['uname', '-s'], { timeoutMs: OPEN_TIMEOUT_MS })
+    .then(({ exitCode, stdout }) => (exitCode === 0 ? stdout.trim() : ''), () => '')
+  const isSet = (value: string | undefined) => value !== undefined && value !== ''
+  const isRemote = isSet(await $.env.get('SSH_CONNECTION')) || isSet(await $.env.get('SSH_TTY')) || isSet(await $.env.get('SSH_CLIENT'))
+  const hasDisplay = isSet(await $.env.get('DISPLAY')) || isSet(await $.env.get('WAYLAND_DISPLAY'))
+  return { system, isRemote, hasDisplay }
+}
+
+// Opens the PR in this machine's browser; where there is none to open, or it fails,
+// copies its URL to the clipboard of the surface pressed on and says so.
+async function openPr($: EngineInterface, pr: Pr, host: Host, surface: RenderSurface): Promise<void> {
+  if (!isPrUrl(pr.url)) {
+    $.ui.toast(`PR #${pr.number} has no GitHub URL to open`)
+    return
+  }
+  const opener = openerFor(host, pr.url)
+  if (opener) {
+    const isOpened = await $.process
+      .run(opener, { timeoutMs: OPEN_TIMEOUT_MS })
+      .then(({ exitCode }) => exitCode === 0, () => false)
+    if (isOpened) return
+  }
+  const { isCopied } = await $.ui.copy({ text: pr.url, surface })
+  $.ui.toast(isCopied ? `Copied PR #${pr.number} URL` : pr.url)
+}
+
 // What the band's buttons and the /pr-weather command drive, for the session's lifetime.
 type Controller = {
   refreshNow: () => Promise<string>
   setMode: (mode: Mode) => Promise<string>
   toggleMode: () => Promise<string>
+  openPr: (pr: Pr, surface: RenderSurface) => Promise<void>
 }
 
 const modeOf = (value: unknown): Mode => (value === 'manual' ? 'manual' : 'auto')
@@ -224,6 +257,8 @@ export const register: Register = (on, options) => {
     let timer: Timer | null = null
     let lastAskedAt = -Infinity
     let lastHint: string | null = null
+    // Read at the first press, then kept: the machine does not change under a session.
+    let host: Promise<Host> | null = null
     const noted = new Set<string>()
     const tick = async () => {
       const t = await $.clock.now()
@@ -303,6 +338,7 @@ export const register: Register = (on, options) => {
       setMode,
       // Reads the mode at press time, so two presses before a redraw both flip it.
       toggleMode: async () => setMode((await read($, status)).mode === 'auto' ? 'manual' : 'auto'),
+      openPr: async (pr, surface) => openPr($, pr, await (host ??= readHost($)), surface),
     }
 
     await $.command.register({ name: 'pr-weather', description: 'Refresh PR weather now, or switch it between auto and manual', argumentHint: 'refresh | mode auto|manual' })
@@ -349,21 +385,29 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="column">
         <Box flexDirection="row">
-          <Text wrap="truncate">
+          <Box key="weather" flexDirection="row">
             <Text dimColor>PRs</Text>
             {list.length === 0 && <Text dimColor> none</Text>}
-            {shown.map(pr => {
+            {shown.flatMap(pr => {
               const { mark, color } = glyph(pr)
-              return (
-                <Text key={pr.url}>
+              return [
+                <Text key={`glyph:${pr.url}`}>
                   {' '}
-                  <Text color={color}>{mark}</Text> {isLinked ? <Link href={pr.url} label={`#${pr.number}`} /> : `#${pr.number}`}
-                </Text>
-              )
+                  <Text color={color}>{isLinked ? <Link href={pr.url} label={mark} /> : mark}</Text>{' '}
+                </Text>,
+                <Button
+                  key={`pr:${pr.url}`}
+                  label={`#${pr.number}`}
+                  plain
+                  onPress={press => void controller?.openPr(pr, press.surface)}
+                />,
+              ]
             })}
             {hidden > 0 && <Text dimColor>{` +${hidden} more`}</Text>}
-            <Text dimColor>{notes}</Text>
-          </Text>
+            <Text dimColor wrap="truncate">
+              {notes}
+            </Text>
+          </Box>
           <Text> </Text>
           <Button key="refresh" label={refreshLabel} hotkey="r" onPress={() => void controller?.refreshNow()} />
           <Text> </Text>
