@@ -5,7 +5,7 @@ import type { LampLine } from '../hooks/line'
 
 // The captain's red, as seen live in a narrow band.
 const RED: LampLine = {
-  lead: '● constructease · ',
+  lead: '● ',
   main: 'ce-ies-file-sync-discovery',
   tail: " needs-decision: R4 drop the offset-compat path. Criterion cited: repo/global rule 'do not preserve backward compatibility'",
   more: '  +1 more',
@@ -37,7 +37,7 @@ describe('fitting the lamp line', () => {
   })
 
   for (const columns of [116, 96, 76, 60, 48, 40]) {
-    test(`at ${columns} cells it fits, keeping the dot, label and count whole`, () => {
+    test(`at ${columns} cells it fits, keeping the dot and count whole`, () => {
       const fitted = fitLine(RED, columns)
       expect(cellWidth(drawn(fitted))).toBeLessThanOrEqual(columns)
       expect(fitted.lead).toBe(RED.lead)
@@ -46,31 +46,31 @@ describe('fitting the lamp line', () => {
   }
 
   test('the reason shrinks first, the task untouched', () => {
-    const fitted = fitLine(RED, 80)
+    const fitted = fitLine(RED, 64)
     expect(fitted.main).toBe(RED.main)
     expect(fitted.tail.startsWith(' needs-decision: R4 drop')).toBe(true)
     expect(fitted.tail.endsWith('…')).toBe(true)
-    expect(cellWidth(drawn(fitted))).toBe(80)
+    expect(cellWidth(drawn(fitted))).toBe(64)
   })
 
   test('the task shrinks only once the reason is down to its minimum', () => {
-    const fitted = fitLine(RED, 60)
+    const fitted = fitLine(RED, 44)
     expect(cellWidth(fitted.tail)).toBe(MIN_TAIL)
     expect(fitted.main.endsWith('…')).toBe(true)
     expect(cellWidth(fitted.main)).toBeGreaterThanOrEqual(MIN_MAIN)
   })
 
   test('narrower still, the reason gives way and the task keeps what is left', () => {
-    const fitted = fitLine(RED, 36)
+    const fitted = fitLine(RED, 20)
     expect(fitted.tail).toBe('')
-    expect(cellWidth(drawn(fitted))).toBeLessThanOrEqual(36)
+    expect(cellWidth(drawn(fitted))).toBeLessThanOrEqual(20)
     expect(fitted.main.startsWith('ce-')).toBe(true)
   })
 
   test('a Korean reason is measured in cells', () => {
     const line = { ...RED, tail: ' needs-decision: 램프랑 글씨랑 붙었어 간격이 없어 그리고 두 줄로 넘어가' }
-    const fitted = fitLine(line, 70)
-    expect(cellWidth(drawn(fitted))).toBeLessThanOrEqual(70)
+    const fitted = fitLine(line, 54)
+    expect(cellWidth(drawn(fitted))).toBeLessThanOrEqual(54)
     expect(fitted.main).toBe(RED.main)
   })
 })
