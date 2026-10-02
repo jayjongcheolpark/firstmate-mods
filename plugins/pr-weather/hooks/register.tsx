@@ -19,6 +19,8 @@ import {
   terminalDrawsLinks,
 } from './weather'
 import type { Quota, RollupItem } from './weather'
+import { parseSecondMates } from './secondmates'
+import type { SecondMate } from './secondmates'
 
 const INITIAL: Status = { mode: 'auto', isRefreshing: false, isStale: false, updatedAt: null, backoffMs: null, limitedUntil: null }
 
@@ -31,7 +33,8 @@ const DEBOUNCE_MS = 30_000
 
 const TIMEOUT_MS = 30_000
 const PR_FIELDS = 'number,url,state,isDraft,headRefOid,statusCheckRollup'
-const LEDGER_EVENTS = '"event": *"task\\.(pr_ready|merged|cleaned_up)"'
+// The records prsFromLedger folds: PR events, and done statuses that name a PR.
+const LEDGER_EVENTS = '"event": *"task\\.(pr_ready|merged|cleaned_up)"|"state": *"done".*https://[^"]*/pull/[0-9]+'
 
 // Nothing to show until the person sets something up; the message says what.
 class SetupNeeded extends Error {}
@@ -43,7 +46,8 @@ class RateLimited extends Error {
   }
 }
 
-type Target = { source: 'mine' } | { source: 'fleet'; home: string }
+type FleetTarget = { source: 'fleet'; home: string; includeSecondMates: boolean }
+type Target = { source: 'mine' } | FleetTarget
 
 type PrView = {
   number: number
@@ -104,25 +108,53 @@ async function toPr($: EngineInterface, view: PrView): Promise<Pr> {
   }
 }
 
-async function fleetUrls($: EngineInterface, home: string): Promise<string[]> {
+// The PR URLs in one home's ledger; null when that home has no ledger.
+async function ledgerUrls($: EngineInterface, home: string): Promise<string[] | null> {
   const ledger = `${home}/state/fleet-ledger.jsonl`
-  if (!(await $.fs.exists(ledger))) {
-    throw new SetupNeeded(`turn on firstmate's fleet ledger to see the fleet's PRs: touch ${home}/config/fleet-ledger`)
-  }
+  if (!(await $.fs.exists(ledger))) return null
   // grep rather than $.fs.read: the ledger never rotates and can outgrow one read.
-  const { exitCode, stdout, stderr } = await $.process.run(['grep', '-E', LEDGER_EVENTS, ledger], { timeoutMs: TIMEOUT_MS })
+  const { exitCode, stdout, stderr, isStdoutTruncated } = await $.process.run(['grep', '-E', LEDGER_EVENTS, ledger], { timeoutMs: TIMEOUT_MS })
   if (exitCode === 1) return []
   if (exitCode !== 0) throw new Error(`grep exited ${exitCode}: ${stderr}`)
+  // A cut answer would miss the newest records, removals among them.
+  if (isStdoutTruncated) throw new Error(`the PR records of ${ledger} pass 4 MiB`)
   return prsFromLedger(stdout)
 }
 
-async function collect($: EngineInterface, target: Target): Promise<Pr[]> {
+// The second mates registered in the home's data/secondmates.md whose homes exist on this machine.
+async function discoverSecondMates($: EngineInterface, home: string): Promise<SecondMate[]> {
+  const text = await $.fs.read(`${home}/data/secondmates.md`).catch(() => '')
+  const mates = parseSecondMates(text).filter(mate => mate.home !== home)
+  const isHere = await Promise.all(mates.map(mate => $.fs.stat(mate.home).then(stat => stat.kind === 'dir', () => false)))
+  return mates.filter((_, index) => isHere[index])
+}
+
+// The union of the PR URLs in the home's ledger and its second mates' ledgers, each once.
+// A home without a ledger adds a note; the band waits for setup only when no home has one.
+async function fleetUrls($: EngineInterface, target: FleetTarget, notes: string[]): Promise<string[]> {
+  const mates = target.includeSecondMates ? await discoverSecondMates($, target.home) : []
+  const main = await ledgerUrls($, target.home)
+  const lists = [main]
+  for (const mate of mates) {
+    const urls = await ledgerUrls($, mate.home)
+    if (urls === null) {
+      notes.push(`second mate ${mate.id} has no fleet ledger, so its PRs are left out: touch ${mate.home}/config/fleet-ledger`)
+    }
+    lists.push(urls)
+  }
+  const hint = `turn on firstmate's fleet ledger to see the fleet's PRs: touch ${target.home}/config/fleet-ledger`
+  if (lists.every(urls => urls === null)) throw new SetupNeeded(hint)
+  if (main === null) notes.push(hint)
+  return [...new Set(lists.flatMap(urls => urls ?? []))]
+}
+
+async function collect($: EngineInterface, target: Target, notes: string[]): Promise<Pr[]> {
   if (target.source === 'mine') {
     const out = await gh($, ['pr', 'list', '--author', '@me', '--state', 'open', '--limit', '100', '--json', PR_FIELDS])
     return Promise.all((JSON.parse(out) as PrView[]).map(view => toPr($, view)))
   }
   const views = await Promise.all(
-    (await fleetUrls($, target.home)).map(async url => JSON.parse(await gh($, ['pr', 'view', url, '--json', PR_FIELDS])) as PrView),
+    (await fleetUrls($, target, notes)).map(async url => JSON.parse(await gh($, ['pr', 'view', url, '--json', PR_FIELDS])) as PrView),
   )
   return Promise.all(views.filter(view => view.state === 'OPEN').map(view => toPr($, view)))
 }
@@ -136,7 +168,13 @@ async function findHome($: EngineInterface): Promise<string | null> {
   return null
 }
 
-async function resolveTarget($: EngineInterface, source: string, homeOverride: string, cwd: string): Promise<Target | null> {
+async function resolveTarget(
+  $: EngineInterface,
+  source: string,
+  homeOverride: string,
+  includeSecondMates: boolean,
+  cwd: string,
+): Promise<Target | null> {
   if (source === 'mine') {
     const inRepo = await $.process
       .run(['git', 'rev-parse', '--is-inside-work-tree'], { cwd, timeoutMs: TIMEOUT_MS })
@@ -144,7 +182,7 @@ async function resolveTarget($: EngineInterface, source: string, homeOverride: s
     return inRepo ? { source: 'mine' } : null
   }
   const home = homeOverride || (await findHome($))
-  return home ? { source: 'fleet', home } : null
+  return home ? { source: 'fleet', home, includeSecondMates } : null
 }
 
 async function expandTilde($: EngineInterface, path: string): Promise<string> {
@@ -166,13 +204,14 @@ export const register: Register = (on, options) => {
   const configuredHome = String(options.home ?? '').trim()
   const everyMs = Math.max(1, Number(options.refreshMinutes) || 3) * MINUTE
   const configMode = modeOf(options.mode)
+  const includeSecondMates = options.includeSecondMates !== false
   let controller: Controller | null = null
   let isTerminalLinked = false
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     const homeOverride = (await expandTilde($, configuredHome)).replace(/(.)\/+$/, '$1')
-    const target = await resolveTarget($, source, homeOverride, e.cwd)
+    const target = await resolveTarget($, source, homeOverride, includeSecondMates, e.cwd)
     if (!target) return started
     isTerminalLinked = terminalDrawsLinks(await $.env.get('FORCE_HYPERLINK'), await $.env.get('TERM_PROGRAM'))
 
@@ -185,6 +224,7 @@ export const register: Register = (on, options) => {
     let timer: Timer | null = null
     let lastAskedAt = -Infinity
     let lastHint: string | null = null
+    const noted = new Set<string>()
     const tick = async () => {
       const t = await $.clock.now()
       await update($, now, () => t)
@@ -209,7 +249,12 @@ export const register: Register = (on, options) => {
       try {
         quota = await readQuota($)
         if (quota && quota.remaining === 0) throw new RateLimited(quota.resetAt)
-        const list = await collect($, target)
+        const notes: string[] = []
+        const list = await collect($, target, notes)
+        for (const note of notes.filter(note => !noted.has(note))) {
+          noted.add(note)
+          $.ui.log(note)
+        }
         const t = await tick()
         lastHint = null
         await update($, prs, () => list)

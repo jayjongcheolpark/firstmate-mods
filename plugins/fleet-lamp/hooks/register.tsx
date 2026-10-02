@@ -1,27 +1,39 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Source } from '../types'
+import type { Followed } from '../types'
 import { applyLines, EMPTY, lampOf } from './rules'
+import { parseSecondMates } from './secondmates'
+import type { SecondMate } from './secondmates'
 
 const latch = atom({ plugin: 'fleet-lamp', key: 'latch' } as const, EMPTY)
-const offset = atom({ plugin: 'fleet-lamp', key: 'offset' } as const, null)
-const source = atom({ plugin: 'fleet-lamp', key: 'source' } as const, { kind: 'none' } as Source)
+const offsets = atom({ plugin: 'fleet-lamp', key: 'offsets' } as const, {})
+const followed = atom({ plugin: 'fleet-lamp', key: 'followed' } as const, [] as Followed[])
 
 const POLL_MS = 2000
+// How often data/secondmates.md is read again, so a second mate added mid-session is followed.
+const DISCOVER_MS = 60_000
+const MAIN_LABEL = 'main'
 // The captain's own prompt, typed or sent from a phone; never a notification, peer, schedule or plugin.
 const CAPTAIN_ORIGINS = new Set(['composer', 'bridge'])
 
 export const register: Register = (on, options) => {
   let isPolling = false
+  const includeSecondMates = options.includeSecondMates !== false
 
   on('session.start', async ($, e, next) => {
     const result = await next(e)
-    const home = await findHome($, String(options.home ?? ''))
-    if (home === null) {
-      await update($, source, () => ({ kind: 'none' }) as Source)
+    const main = await findHome($, String(options.home ?? ''))
+    if (main === null) {
+      await update($, followed, () => [])
       $.ui.log('no firstmate home above this session; set the plugin\'s "home" option to follow one', { to: 'debug' })
       return result
+    }
+
+    let homes: Followed[] = [{ home: main, label: MAIN_LABEL }]
+    const discover = async () => {
+      const mates = includeSecondMates ? await discoverSecondMates($, main) : []
+      homes = [{ home: main, label: MAIN_LABEL }, ...mates.map(mate => ({ home: mate.home, label: mate.id }))]
     }
 
     const tick = async () => {
@@ -30,21 +42,32 @@ export const register: Register = (on, options) => {
       }
       isPolling = true
       try {
-        await poll($, home)
+        const live: Followed[] = []
+        for (const home of homes) {
+          if (await poll($, home, home.home === main)) {
+            live.push(home)
+          }
+        }
+        if (JSON.stringify(live) !== JSON.stringify(await read($, followed))) {
+          await update($, followed, () => live)
+        }
       } catch (error) {
         $.ui.log(`ledger read skipped: ${String(error)}`, { to: 'debug' })
       } finally {
         isPolling = false
       }
     }
+    await discover()
     await tick()
     $.clock.every(POLL_MS, () => void tick())
+    $.clock.every(DISCOVER_MS, () => void discover().catch(() => undefined))
     return result
   })
 
   // The lamp's clear-hook: the captain has seen it.
   on('prompt.submit', async ($, e, next) => {
     if (CAPTAIN_ORIGINS.has(e.origin.kind)) {
+      // One latch holds every home's signals, so this clears them all.
       await update($, latch, () => EMPTY)
     }
     return next(e)
@@ -52,19 +75,23 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const lamp = lampOf(await read($, latch))
-    const isOn = (await read($, source)).kind === 'enabled'
-    if (e.props.hasSurvey || !isOn || lamp === null) {
+    const homes = await read($, followed)
+    if (e.props.hasSurvey || homes.length === 0 || lamp === null) {
       return next(e)
     }
 
     const { Box, Text } = $.ui.resolve(e)
     const more = lamp.count > 1 ? `  +${lamp.count - 1} more` : ''
+    // Which home the signal came from, once there is more than one to tell apart.
+    const label = homes.length > 1 ? homes.find(followed => followed.home === lamp.signal.home)?.label : undefined
+    const from = label === undefined ? null : <Text dimColor>{label} </Text>
 
     if (lamp.color === 'red') {
       const { task, state, reason } = lamp.signal
       return (
         <Box key="lamp" flexDirection="row" width={e.props.bodyColumns}>
           <Text color="error">● </Text>
+          {from}
           <Text bold wrap="truncate-end">
             {task}
           </Text>
@@ -84,6 +111,7 @@ export const register: Register = (on, options) => {
     return (
       <Box key="lamp" flexDirection="row" width={e.props.bodyColumns}>
         <Text color="success">● </Text>
+        {from}
         <Text bold>PR ready </Text>
         <Box flexShrink={1}>
           <Text wrap="truncate-end">{pr ?? task}</Text>
@@ -114,59 +142,72 @@ async function findHome($: EngineInterface, configured: string): Promise<string 
   return null
 }
 
-/** Reads the ledger lines appended since the saved offset and folds them into the latch. */
-async function poll($: EngineInterface, home: string): Promise<void> {
-  const isEnabled = await $.fs.exists(`${home}/config/fleet-ledger`)
-  const now: Source = isEnabled ? { kind: 'enabled', home } : { kind: 'disabled', home }
-  const was = await read($, source)
-  if (was.kind !== now.kind) {
-    await update($, source, () => now)
-  }
-  if (!isEnabled) {
-    await hintOnce($, home)
-    return
+/**
+ * Reads the lines appended to one home's ledger since its saved offset and folds them into the latch.
+ * Answers whether that home's ledger is on.
+ */
+async function poll($: EngineInterface, { home, label }: Followed, isMain: boolean): Promise<boolean> {
+  if (!(await $.fs.exists(`${home}/config/fleet-ledger`))) {
+    await hintOnce(
+      $,
+      home,
+      isMain
+        ? `the fleet ledger is off in ${home}; turn it on with: touch ${home}/config/fleet-ledger`
+        : `the fleet ledger is off in second mate ${label} (${home}), so the lamp does not follow it; turn it on with: touch ${home}/config/fleet-ledger`,
+    )
+    return false
   }
 
   const ledger = `${home}/state/fleet-ledger.jsonl`
   const stat = await $.fs.stat(ledger).catch(() => undefined)
   const size = stat?.kind === 'file' ? stat.size : 0
-  const saved = await read($, offset)
+  const saved = (await read($, offsets))[home]
+  const save = (to: number) => update($, offsets, current => ({ ...current, [home]: to }))
   // First look: start at the end, so old history does not flash red.
-  if (saved === null) {
-    await update($, offset, () => size)
-    return
+  if (saved === undefined) {
+    await save(size)
+    return true
   }
   // The ledger was truncated (docs/fleet-ledger.md): later records start from the top.
   const start = size < saved ? 0 : saved
   if (size === start) {
     if (start !== saved) {
-      await update($, offset, () => start)
+      await save(start)
     }
-    return
+    return true
   }
 
   // $.fs.read takes whole files of at most 4 MiB, and the ledger never rotates: tail reads the
   // appended bytes alone.
   const { exitCode, stdout } = await $.process.run(['tail', '-c', `+${start + 1}`, ledger])
   if (exitCode !== 0) {
-    return
+    return true
   }
   // A partial last record waits for the next write.
   const complete = stdout.slice(0, stdout.lastIndexOf('\n') + 1)
   if (complete === '') {
-    return
+    return true
   }
-  await update($, latch, current => applyLines(current, complete))
-  await update($, offset, () => start + new TextEncoder().encode(complete).length)
+  await update($, latch, current => applyLines(current, complete, home))
+  await save(start + new TextEncoder().encode(complete).length)
+  return true
 }
 
-async function hintOnce($: EngineInterface, home: string): Promise<void> {
+/** The second mates registered in `home`'s data/secondmates.md whose homes exist on this machine. */
+async function discoverSecondMates($: EngineInterface, home: string): Promise<SecondMate[]> {
+  const text = await $.fs.read(`${home}/data/secondmates.md`).catch(() => '')
+  const mates = parseSecondMates(text).filter(mate => mate.home !== home)
+  const isHere = await Promise.all(mates.map(mate => isDir($, mate.home)))
+  return mates.filter((_, index) => isHere[index])
+}
+
+async function hintOnce($: EngineInterface, home: string, text: string): Promise<void> {
   const key = `hinted:${home}`
   if ((await $.store.get(key)) === true) {
     return
   }
   await $.store.set(key, true)
-  $.ui.log(`the fleet ledger is off in ${home}; turn it on with: touch ${home}/config/fleet-ledger`)
+  $.ui.log(text)
 }
 
 async function isDir($: EngineInterface, path: string): Promise<boolean> {

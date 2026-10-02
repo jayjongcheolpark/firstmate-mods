@@ -1,6 +1,6 @@
 {
   "name": "pr-weather",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "The CI weather of your firstmate fleet's open PRs, one glyph per PR in the band above the prompt",
   "author": { "name": "Jay Park" },
   "homepage": "https://github.com/jayjongcheolpark/firstmate-mods",
@@ -35,6 +35,12 @@
       "title": "Firstmate home",
       "description": "The firstmate home whose fleet ledger to read (fleet source). Empty: the nearest one at or above the session's working directory. When set, the band shows in every session.",
       "default": ""
+    },
+    "includeSecondMates": {
+      "type": "boolean",
+      "title": "Include second mates",
+      "description": "Also show the PRs in the fleet ledgers of the second mate homes registered in the firstmate home's data/secondmates.md that exist on this machine (fleet source).",
+      "default": true
     }
   }
 }
