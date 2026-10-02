@@ -272,3 +272,55 @@ describe('second mate homes', () => {
     expect((await bandText($))[0]).toBe('● api failed: tests red')
   })
 })
+
+// Another plugin's band row, as pr-weather draws its own: the row, then whatever is beneath.
+// Self-contained, as a test's inline plugin must be.
+function prsRow(on: On) {
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const { Box, Text } = $.ui.resolve(e)
+    const below = await next(e)
+    return h(Box, { flexDirection: 'column' }, h(Text, { key: 'prs' }, 'PRs none'), below) as RenderElement
+  })
+}
+
+describe('beside another band plugin', () => {
+  const MISSING_MATE = `the fleet ledger is off in second mate sbb-mate (${MATE}), so the lamp does not follow it; turn it on with: touch ${MATE_FLAG}`
+
+  for (const tier of ['prepend', 'append'] as const) {
+    test(`the lamp and the other row both show, with the ${tier} tier`, { plugins: [{ name: 'prs', tier, register: prsRow }] }, async ($, on) => {
+      const files: Record<string, string> = { [FLAG]: '', [LEDGER]: '', [REGISTRY]: entry('sbb-mate', MATE), [`${MATE}/data`]: '' }
+      const fm = world(on, files)
+      await start($)
+      expect(await bandText($)).toEqual(['PRs none', 'PRs none'])
+
+      fm.append(status('lamp-test', 'needs-decision', ' TEST - fleet-lamp check, not a real decision'))
+      await fm.clock.advance(2000)
+      // The other plugin's row first, the lamp below it, whichever side of the lamp it loads on.
+      expect(await bandText($)).toEqual(Array(2).fill('PRs none● lamp-test needs-decision: TEST - fleet-lamp check, not a real decision'))
+      expect(fm.logs).toEqual([MISSING_MATE])
+    })
+  }
+
+  test('a green lamp keeps the other row too', { plugins: [{ name: 'prs', tier: 'append', register: prsRow }] }, async ($, on) => {
+    const files: Record<string, string> = { [FLAG]: '', [LEDGER]: '' }
+    const fm = world(on, files)
+    await start($)
+    fm.append({ v: 1, ts: 2, event: 'task.pr_ready', task: 'fix-login', pr: 'https://github.com/acme/web/pull/7' })
+    await fm.clock.advance(2000)
+    expect(await bandText($)).toEqual(Array(2).fill('PRs none● PR ready https://github.com/acme/web/pull/7  fix-login'))
+  })
+
+  test('the missing-ledger note is a transcript line, once per session, never in the band', async ($, on) => {
+    const files: Record<string, string> = { [FLAG]: '', [LEDGER]: '', [REGISTRY]: entry('sbb-mate', MATE), [`${MATE}/data`]: '' }
+    const fm = world(on, files)
+    await start($)
+    fm.append(status('t', 'blocked', ' x'))
+    await fm.clock.advance(10_000)
+    expect(fm.logs).toEqual([MISSING_MATE])
+    expect((await bandText($)).some(text => text.includes('fleet ledger'))).toBe(false)
+
+    // The next session says it again, so a ledger still off is not forgotten.
+    await start($)
+    expect(fm.logs).toEqual([MISSING_MATE, MISSING_MATE])
+  })
+})

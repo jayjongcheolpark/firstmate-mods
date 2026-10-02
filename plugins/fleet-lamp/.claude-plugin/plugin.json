@@ -1,6 +1,6 @@
 {
   "name": "fleet-lamp",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A lamp above the prompt: red when the firstmate fleet needs you, green when a PR is ready.",
   "author": { "name": "Jay Park" },
   "homepage": "https://github.com/jayjongcheolpark/firstmate-mods",

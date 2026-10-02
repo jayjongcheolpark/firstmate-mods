@@ -31,6 +31,8 @@ export const register: Register = (on, options) => {
     }
 
     let homes: Followed[] = [{ home: main, label: MAIN_LABEL }]
+    // The homes whose ledger-off hint this session has logged: once each per session.
+    const hinted = new Set<string>()
     const discover = async () => {
       const mates = includeSecondMates ? await discoverSecondMates($, main) : []
       homes = [{ home: main, label: MAIN_LABEL }, ...mates.map(mate => ({ home: mate.home, label: mate.id }))]
@@ -44,7 +46,7 @@ export const register: Register = (on, options) => {
       try {
         const live: Followed[] = []
         for (const home of homes) {
-          if (await poll($, home, home.home === main)) {
+          if (await poll($, home, home.home === main, hinted)) {
             live.push(home)
           }
         }
@@ -81,6 +83,8 @@ export const register: Register = (on, options) => {
     }
 
     const { Box, Text } = $.ui.resolve(e)
+    // What the plugins beneath draw stays, above the lamp: the band is shared.
+    const below = await next(e)
     const more = lamp.count > 1 ? `  +${lamp.count - 1} more` : ''
     // Which home the signal came from, once there is more than one to tell apart.
     const label = homes.length > 1 ? homes.find(followed => followed.home === lamp.signal.home)?.label : undefined
@@ -89,37 +93,43 @@ export const register: Register = (on, options) => {
     if (lamp.color === 'red') {
       const { task, state, reason } = lamp.signal
       return (
-        <Box key="lamp" flexDirection="row" width={e.props.bodyColumns}>
-          <Text color="error">● </Text>
-          {from}
-          <Text bold wrap="truncate-end">
-            {task}
-          </Text>
-          <Box flexShrink={1}>
-            <Text wrap="truncate-end">
-              {' '}
-              {state}
-              {reason === '' ? '' : `: ${reason}`}
+        <Box flexDirection="column">
+          {below}
+          <Box key="lamp" flexDirection="row" width={e.props.bodyColumns}>
+            <Text color="error">● </Text>
+            {from}
+            <Text bold wrap="truncate-end">
+              {task}
             </Text>
+            <Box flexShrink={1}>
+              <Text wrap="truncate-end">
+                {' '}
+                {state}
+                {reason === '' ? '' : `: ${reason}`}
+              </Text>
+            </Box>
+            <Text dimColor>{more}</Text>
           </Box>
-          <Text dimColor>{more}</Text>
         </Box>
       )
     }
 
     const { task, pr } = lamp.signal
     return (
-      <Box key="lamp" flexDirection="row" width={e.props.bodyColumns}>
-        <Text color="success">● </Text>
-        {from}
-        <Text bold>PR ready </Text>
-        <Box flexShrink={1}>
-          <Text wrap="truncate-end">{pr ?? task}</Text>
+      <Box flexDirection="column">
+        {below}
+        <Box key="lamp" flexDirection="row" width={e.props.bodyColumns}>
+          <Text color="success">● </Text>
+          {from}
+          <Text bold>PR ready </Text>
+          <Box flexShrink={1}>
+            <Text wrap="truncate-end">{pr ?? task}</Text>
+          </Box>
+          <Text dimColor>
+            {pr === null ? '' : `  ${task}`}
+            {more}
+          </Text>
         </Box>
-        <Text dimColor>
-          {pr === null ? '' : `  ${task}`}
-          {more}
-        </Text>
       </Box>
     )
   })
@@ -146,15 +156,16 @@ async function findHome($: EngineInterface, configured: string): Promise<string 
  * Reads the lines appended to one home's ledger since its saved offset and folds them into the latch.
  * Answers whether that home's ledger is on.
  */
-async function poll($: EngineInterface, { home, label }: Followed, isMain: boolean): Promise<boolean> {
+async function poll($: EngineInterface, { home, label }: Followed, isMain: boolean, hinted: Set<string>): Promise<boolean> {
   if (!(await $.fs.exists(`${home}/config/fleet-ledger`))) {
-    await hintOnce(
-      $,
-      home,
-      isMain
-        ? `the fleet ledger is off in ${home}; turn it on with: touch ${home}/config/fleet-ledger`
-        : `the fleet ledger is off in second mate ${label} (${home}), so the lamp does not follow it; turn it on with: touch ${home}/config/fleet-ledger`,
-    )
+    if (!hinted.has(home)) {
+      hinted.add(home)
+      $.ui.log(
+        isMain
+          ? `the fleet ledger is off in ${home}; turn it on with: touch ${home}/config/fleet-ledger`
+          : `the fleet ledger is off in second mate ${label} (${home}), so the lamp does not follow it; turn it on with: touch ${home}/config/fleet-ledger`,
+      )
+    }
     return false
   }
 
@@ -199,15 +210,6 @@ async function discoverSecondMates($: EngineInterface, home: string): Promise<Se
   const mates = parseSecondMates(text).filter(mate => mate.home !== home)
   const isHere = await Promise.all(mates.map(mate => isDir($, mate.home)))
   return mates.filter((_, index) => isHere[index])
-}
-
-async function hintOnce($: EngineInterface, home: string, text: string): Promise<void> {
-  const key = `hinted:${home}`
-  if ((await $.store.get(key)) === true) {
-    return
-  }
-  await $.store.set(key, true)
-  $.ui.log(text)
 }
 
 async function isDir($: EngineInterface, path: string): Promise<boolean> {
