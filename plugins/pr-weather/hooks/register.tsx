@@ -150,15 +150,33 @@ async function fleetUrls($: EngineInterface, target: FleetTarget, notes: string[
   return [...new Set(lists.flatMap(urls => urls ?? []))]
 }
 
-async function collect($: EngineInterface, target: Target, notes: string[]): Promise<Pr[]> {
-  if (target.source === 'mine') {
-    const out = await gh($, ['pr', 'list', '--author', '@me', '--state', 'open', '--limit', '100', '--json', PR_FIELDS])
-    return Promise.all((JSON.parse(out) as PrView[]).map(view => toPr($, view)))
+// One PR's lookup. A failure other than setup or quota keeps that PR's last good weather, or leaves it out.
+async function isolated(lookup: () => Promise<Pr | null>, last: Pr | undefined): Promise<Pr | null> {
+  try {
+    return await lookup()
+  } catch (error) {
+    if (error instanceof SetupNeeded || error instanceof RateLimited) throw error
+    return last ?? null
   }
-  const views = await Promise.all(
-    (await fleetUrls($, target, notes)).map(async url => JSON.parse(await gh($, ['pr', 'view', url, '--json', PR_FIELDS])) as PrView),
+}
+
+async function collect($: EngineInterface, target: Target, notes: string[], previous: Pr[]): Promise<Pr[]> {
+  const last = new Map(previous.map(pr => [pr.url, pr]))
+  if (target.source === 'mine') {
+    const views = JSON.parse(await gh($, ['pr', 'list', '--author', '@me', '--state', 'open', '--limit', '100', '--json', PR_FIELDS])) as PrView[]
+    const found = await Promise.all(views.map(view => isolated(() => toPr($, view), last.get(view.url))))
+    return found.filter(pr => pr !== null)
+  }
+  const urls = await fleetUrls($, target, notes)
+  const found = await Promise.all(
+    urls.map(url =>
+      isolated(async () => {
+        const view = JSON.parse(await gh($, ['pr', 'view', url, '--json', PR_FIELDS])) as PrView
+        return view.state === 'OPEN' ? toPr($, view) : null
+      }, last.get(url)),
+    ),
   )
-  return Promise.all(views.filter(view => view.state === 'OPEN').map(view => toPr($, view)))
+  return found.filter(pr => pr !== null)
 }
 
 // The deepest directory at or above the session's that holds firstmate's AGENTS.md and a state/.
@@ -243,6 +261,8 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
+    // No one is at the prompt to read the band: poll nothing.
+    if (!e.isInteractive) return started
     const homeOverride = (await expandTilde($, configuredHome)).replace(/(.)\/+$/, '$1')
     const target = await resolveTarget($, source, homeOverride, includeSecondMates, e.cwd)
     if (!target) return started
@@ -285,7 +305,7 @@ export const register: Register = (on, options) => {
         quota = await readQuota($)
         if (quota && quota.remaining === 0) throw new RateLimited(quota.resetAt)
         const notes: string[] = []
-        const list = await collect($, target, notes)
+        const list = await collect($, target, notes, (await read($, prs)) ?? [])
         for (const note of notes.filter(note => !noted.has(note))) {
           noted.add(note)
           $.ui.log(note)

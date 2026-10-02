@@ -25,6 +25,10 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     const result = await next(e)
+    // No one is at the prompt to see the lamp: follow nothing.
+    if (!e.isInteractive) {
+      return result
+    }
     const main = await findHome($, String(options.home ?? ''))
     if (main === null) {
       await update($, followed, () => [])
@@ -126,7 +130,7 @@ export const register: Register = (on, options) => {
 
 /**
  * The firstmate home: the configured one, else the nearest directory at or above the session's
- * working directory whose AGENTS.md names firstmate and which holds state/.
+ * working directory whose AGENTS.md has a `# Firstmate` heading line and which holds state/.
  */
 async function findHome($: EngineInterface, configured: string): Promise<string | null> {
   if (configured.trim() !== '') {
@@ -134,7 +138,7 @@ async function findHome($: EngineInterface, configured: string): Promise<string 
   }
   const found = await $.fs.ancestors({ names: ['AGENTS.md'] })
   for (const { dir, content } of [...found].reverse()) {
-    if (/firstmate/i.test(content) && (await isDir($, `${dir}/state`))) {
+    if (/^# Firstmate\s*$/m.test(content) && (await isDir($, `${dir}/state`))) {
       return trimSlash(dir)
     }
   }
