@@ -83,8 +83,9 @@ async function bandText($: Engine): Promise<string[]> {
   const shown: string[] = []
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...BAND, surface })
-    const texts = await ui.findAll({ type: 'Text' })
-    shown.push(texts.map(text => text.text).join(''))
+    // The other plugin's row, where a test loads one, then the lamp's.
+    const rows = await Promise.all(['prs', 'lamp'].map(key => ui.find({ key })))
+    shown.push(rows.map(row => row?.text ?? '').join(''))
     await ui.unmount()
   }
   return shown
@@ -189,18 +190,18 @@ describe('second mate homes', () => {
 
     fm.appendTo(MATE_LEDGER, status('ce-po', 'needs-decision', ' pick a vendor'))
     await fm.clock.advance(2000)
-    expect(await bandText($)).toEqual(Array(2).fill('● constructease ce-po needs-decision: pick a vendor'))
+    expect(await bandText($)).toEqual(Array(2).fill('● constructease · ce-po needs-decision: pick a vendor'))
 
     fm.append(status('api', 'failed', ' tests red'))
     await fm.clock.advance(2000)
-    expect((await bandText($))[0]).toBe('● main api failed: tests red  +1 more')
+    expect((await bandText($))[0]).toBe('● main · api failed: tests red  +1 more')
 
     await prompt($, 'composer')
     expect(await bandText($)).toEqual(['', ''])
 
     fm.appendTo(MATE_LEDGER, { v: 1, ts: 2, event: 'task.pr_ready', task: 'ce-po', pr: 'https://github.com/acme/ce/pull/3' })
     await fm.clock.advance(2000)
-    expect((await bandText($))[0]).toBe('● constructease PR ready https://github.com/acme/ce/pull/3  ce-po')
+    expect((await bandText($))[0]).toBe('● constructease · PR ready https://github.com/acme/ce/pull/3  ce-po')
   })
 
   test('keeps an offset per home, so one ledger truncating rereads only that one', async ($, on) => {
@@ -212,10 +213,10 @@ describe('second mate homes', () => {
     files[MATE_LEDGER] = ''
     fm.appendTo(MATE_LEDGER, status('ce', 'blocked', ' x'))
     await fm.clock.advance(2000)
-    expect((await bandText($))[0]).toBe('● constructease ce blocked: x')
+    expect((await bandText($))[0]).toBe('● constructease · ce blocked: x')
     fm.append(status('api', 'blocked', ' y'))
     await fm.clock.advance(2000)
-    expect((await bandText($))[0]).toBe('● main api blocked: y  +1 more')
+    expect((await bandText($))[0]).toBe('● main · api blocked: y  +1 more')
   })
 
   test('with only the main home followed, the band names no home', async ($, on) => {
@@ -257,7 +258,7 @@ describe('second mate homes', () => {
     await fm.clock.advance(60_000)
     fm.appendTo(MATE_LEDGER, status('ce', 'blocked', ' x'))
     await fm.clock.advance(2000)
-    expect((await bandText($))[0]).toBe('● constructease ce blocked: x')
+    expect((await bandText($))[0]).toBe('● constructease · ce blocked: x')
   })
 
   test('includeSecondMates off follows the main home alone', { options: { includeSecondMates: false } }, async ($, on) => {
@@ -279,7 +280,7 @@ function prsRow(on: On) {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const { Box, Text } = $.ui.resolve(e)
     const below = await next(e)
-    return h(Box, { flexDirection: 'column' }, h(Text, { key: 'prs' }, 'PRs none'), below) as RenderElement
+    return h(Box, { flexDirection: 'column' }, h(Box, { key: 'prs' }, h(Text, {}, 'PRs none')), below) as RenderElement
   })
 }
 
@@ -323,4 +324,36 @@ describe('beside another band plugin', () => {
     await start($)
     expect(fm.logs).toEqual([MISSING_MATE, MISSING_MATE])
   })
+})
+
+describe('the line at any width', () => {
+  const REASON = " R4 drop the offset-compat path. Criterion cited: repo/global rule 'do not preserve backward compatibility'"
+  const narrow = (bodyColumns: number) => ({ ...BAND, props: { ...BAND.props, bodyColumns } })
+
+  for (const bodyColumns of [60, 100, 160]) {
+    test(`a second mate red with a long reason stays one spaced line at ${bodyColumns} columns`, async ($, on) => {
+      const files: Record<string, string> = {
+        [FLAG]: '',
+        [LEDGER]: '',
+        [REGISTRY]: entry('constructease', MATE),
+        [MATE_FLAG]: '',
+        [MATE_LEDGER]: '',
+      }
+      const fm = world(on, files)
+      await start($)
+      fm.appendTo(MATE_LEDGER, status('ce-ies-file-sync-discovery', 'needs-decision', REASON), status('ce-other', 'blocked', ' x'))
+      await fm.clock.advance(2000)
+      for (const surface of SURFACES) {
+        const ui = await $.ui.mount({ ...narrow(bodyColumns), surface })
+        const lamp = (await ui.find({ key: 'lamp' }))?.text ?? ''
+        await ui.unmount()
+        // The terminal keeps its last four cells for the [-] control.
+        const room = bodyColumns - (surface === 'terminal' ? 4 : 0)
+        expect(lamp.startsWith('● constructease · ce-')).toBe(true)
+        expect(lamp.endsWith('  +1 more')).toBe(true)
+        expect([...lamp].length).toBeLessThanOrEqual(room)
+        expect(lamp.includes('\n')).toBe(false)
+      }
+    })
+  }
 })

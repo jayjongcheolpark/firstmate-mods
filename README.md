@@ -47,6 +47,8 @@ When nothing needs you, the band shows nothing.
 - 🟢 **Green**: a PR is ready for review. The band shows the PR URL and its task.
 - **Nothing**: the fleet doesn't need you.
 
+The lamp is always one line. When it does not fit the band, the reason (or, for green, the task after the URL) is cut first, with `…`, down to 16 cells; then the task (or the URL), down to 12 cells; then the reason goes. The dot, the home name and `+N more` are never cut. The mod measures in terminal cells, so Korean and other wide text counts double, and in the terminal it leaves the last four cells for the band's `[-]` control.
+
 ### The rules
 
 The band reads only `task.status` and `task.pr_ready` records from firstmate's fleet activity ledger, `state/fleet-ledger.jsonl` (see `docs/fleet-ledger.md` in the firstmate repository), in the home and in its [second mates](#second-mates)' homes.
@@ -88,7 +90,7 @@ A firstmate with second mates records their work in each second mate's own home:
 - The mod reads the home's `data/secondmates.md` and takes every registered entry with `(home: <absolute path>; ...)` whose directory exists on this machine. Remote entries (`host: ...; root: ...; home: ...`) are skipped: the mod makes no SSH or network calls.
 - Each second mate home is followed exactly like the main one, with its own byte offset.
 - A second mate home whose ledger is off is not followed, and the mod adds one dim line to the transcript that names it and tells you how to turn it on.
-- When more than one home is followed, the band names the home a signal came from, dim, after the dot: `main` for the session's own home, or the second mate's id (`● constructease ce-po needs-decision: pick a vendor`).
+- When more than one home is followed, the band names the home a signal came from, dim, after the dot and followed by `·`: `main` for the session's own home, or the second mate's id (`● constructease · ce-po needs-decision: pick a vendor`).
 - Your next prompt clears the signals of every home.
 - The mod reads `data/secondmates.md` again every minute, so a second mate added mid-session is followed without a reload.
 
@@ -113,13 +115,13 @@ The mod reads these paths: `data/secondmates.md` in the main home, and the `conf
 ```sh
 claude plugin validate .                    # the marketplace
 claude plugin validate plugins/fleet-lamp   # the plugin and its hooks module
-claude plugin test plugins/fleet-lamp       # the rule, second mate and band tests
+claude plugin test plugins/fleet-lamp       # the rule, line fitting, second mate and band tests
 npx -p typescript tsc -p plugins/fleet-lamp  # type-check, once a session has loaded the mod
 ```
 
 A session that loads the mod from a folder you own (`--plugin-dir`) writes the API types to `plugins/fleet-lamp/.claude-plugin/types/`, which `tsconfig.json` extends.
 
-The rules are pure functions in `plugins/fleet-lamp/hooks/rules.ts`, and the `data/secondmates.md` parser is `plugins/fleet-lamp/hooks/secondmates.ts`. pr-weather carries an identical copy of that parser, because plugins cannot import each other. The hooks module that reads the ledgers and draws the band is `plugins/fleet-lamp/hooks/register.tsx`.
+The rules are pure functions in `plugins/fleet-lamp/hooks/rules.ts`, the one-line fitting in `plugins/fleet-lamp/hooks/line.ts`, and the `data/secondmates.md` parser is `plugins/fleet-lamp/hooks/secondmates.ts`. pr-weather carries an identical copy of that parser, because plugins cannot import each other. The hooks module that reads the ledgers and draws the band is `plugins/fleet-lamp/hooks/register.tsx`.
 
 ## pr-weather
 
@@ -150,7 +152,24 @@ After the PRs come:
 - `low quota, every 12m` while auto mode backs off, or `rate-limited, resets in 17m` while GitHub's rate limit holds every refresh;
 - the refresh button `[ ↻ ]` (`[ … ]` while a refresh runs) and the mode button `[ auto ]` or `[ manual ]`.
 
-Each `#N` is a link to the PR (cmd-click in the terminal) where Claude Code draws terminal hyperlinks: Ghostty, iTerm2, WezTerm, kitty, Alacritty, Warp, Hyper and the VS Code terminal. In other terminals the band draws a plain `#N`, because the fallback (the URL printed after the number) does not fit one line. If your terminal supports OSC 8 hyperlinks but is not on that list, set `FORCE_HYPERLINK=1` in Claude Code's environment and the numbers become links.
+### Opening a PR
+
+Press a PR's `#N` to open it, in any terminal:
+
+- **Fullscreen layout**: click `#N`.
+- **Default layout**: focus the band with `ctrl+x tab`, move to `#N` with `tab`, and press `Enter`.
+- **Desktop**: click `#N`.
+
+What a press does depends on where the session runs:
+
+- **A local Mac** runs `open <url>`, which opens the PR in your default browser.
+- **A local Linux desktop** (with `DISPLAY` or `WAYLAND_DISPLAY` set) runs `xdg-open <url>`.
+- **Anywhere else**, the mod copies the PR URL to your clipboard and shows `Copied PR #N URL`. That covers an SSH session (`SSH_CONNECTION`, `SSH_TTY` or `SSH_CLIENT` set) and a Linux server without a desktop, such as one you reach through a terminal multiplexer. In the terminal the copy goes through the terminal's clipboard (OSC 52, as `/copy` does), so it lands on the machine you are sitting at. Paste the URL into your browser.
+- If the opener fails, the mod copies the URL instead. If the copy fails too, the toast shows the URL itself.
+
+The mod opens only `https://github.com/<owner>/<repo>/pull/<n>` URLs, runs the opener without a shell, and gives it 10 seconds.
+
+The weather glyph before each `#N` is also a terminal hyperlink to the PR (cmd-click, handled by the terminal itself) where Claude Code draws terminal hyperlinks: Ghostty, iTerm2, WezTerm, kitty, Alacritty, Warp, Hyper and the VS Code terminal. If your terminal supports OSC 8 hyperlinks but is not on that list (Kaku, for example), set `FORCE_HYPERLINK=1` in Claude Code's environment. On the desktop the glyph is always a link.
 
 When there are no open PRs, the band shows `PRs none` and the buttons.
 
@@ -163,7 +182,7 @@ To refresh now, press `[ ↻ ]` or run `/pr-weather refresh`. That works in both
 
 To switch modes, press the mode button or run `/pr-weather mode auto` or `/pr-weather mode manual`. The choice is kept across sessions until you change the `mode` setting itself.
 
-To press a band button from the keyboard, focus the band with `ctrl+x tab` and press `r` (refresh) or `m` (mode). In the fullscreen layout you can also click them.
+To press a band button from the keyboard, focus the band with `ctrl+x tab` and press `r` (refresh) or `m` (mode), or move to a button with `tab` and press `Enter`. In the fullscreen layout you can also click them.
 
 ### Rate limits
 
@@ -215,8 +234,8 @@ Each refresh makes one `gh api rate_limit` call, then two calls per PR: `gh pr v
 
 ```sh
 claude plugin validate plugins/pr-weather   # the plugin and its hooks module
-claude plugin test plugins/pr-weather       # the weather, ledger, second mate, layout, mode and band tests
+claude plugin test plugins/pr-weather       # the weather, ledger, second mate, layout, mode, opening and band tests
 npx -p typescript tsc -p plugins/pr-weather  # type-check, once a session has loaded the mod
 ```
 
-The pure parts (glyphs, check classification, the ledger, the band layout, quota and backoff) are in `plugins/pr-weather/hooks/weather.ts`, and the `data/secondmates.md` parser is `plugins/pr-weather/hooks/secondmates.ts`. The hooks module that calls `gh`, schedules refreshes and draws the band is `plugins/pr-weather/hooks/register.tsx`.
+The pure parts (glyphs, check classification, the ledger, the band layout, quota and backoff) are in `plugins/pr-weather/hooks/weather.ts`, the URL check and opener choice are in `plugins/pr-weather/hooks/open.ts`, and the `data/secondmates.md` parser is `plugins/pr-weather/hooks/secondmates.ts`. The hooks module that calls `gh`, schedules refreshes and draws the band is `plugins/pr-weather/hooks/register.tsx`.

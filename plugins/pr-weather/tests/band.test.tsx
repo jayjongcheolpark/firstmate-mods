@@ -43,6 +43,11 @@ type World = {
   env?: Record<string, string>
   // Answers every gh call, rate_limit included, in place of the views and quota above.
   gh?: (argv: readonly string[]) => ProcessRunResult | Promise<ProcessRunResult>
+  // What `uname -s` prints; the machine's browser opener (open, xdg-open) answers `opener`.
+  system?: string
+  opener?: (argv: readonly string[]) => ProcessRunResult
+  // Whether the surface's clipboard takes a copy.
+  canCopy?: boolean
 }
 
 // The engine beneath the plugin: a firstmate home on disk, its ledger, and gh.
@@ -52,6 +57,8 @@ function world(on: On, w: World) {
   mock.env(on, w.env ?? {})
   const logs: string[] = []
   const runs: string[][] = []
+  const copies: string[] = []
+  const toasts: string[] = []
   const views = w.views ?? {}
 
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -75,6 +82,15 @@ function world(on: On, w: World) {
     logs.push(e.text)
     return { value: undefined }
   })
+  on('ui.copy', ($, e) => {
+    if (w.canCopy === false) return { value: { isCopied: false, reason: 'no-clipboard' } }
+    copies.push(e.text)
+    return { value: { isCopied: true } }
+  })
+  on('ui.toast', ($, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
     const { Text } = $.ui.resolve(e)
     return <Text>prompt</Text>
@@ -86,6 +102,11 @@ function world(on: On, w: World) {
       return lines?.length ? ok(lines.join('\n') + '\n') : exit(1)
     }
     if (argv[0] === 'git') return w.isRepo === false ? exit(128) : ok('true\n')
+    if (argv[0] === 'uname') return ok(`${w.system ?? 'Darwin'}\n`)
+    if (argv[0] === 'open' || argv[0] === 'xdg-open') {
+      if (!w.opener) throw new Error(`spawn ${argv[0]} ENOENT`)
+      return w.opener(argv)
+    }
     if (argv[0] !== 'gh') throw new Error(`unexpected ${argv.join(' ')}`)
     if (w.gh) return w.gh(argv)
     if (argv[1] === 'api' && argv[2] === 'rate_limit') {
@@ -112,7 +133,10 @@ function world(on: On, w: World) {
   // Each refresh round starts by reading the quota.
   const rounds = () => runs.filter(argv => argv[0] === 'gh' && argv[2] === 'rate_limit').length
 
-  return { clock, logs, runs, rounds }
+  // The browser openers run, each as its argv.
+  const opens = () => runs.filter(argv => argv[0] === 'open' || argv[0] === 'xdg-open')
+
+  return { clock, logs, runs, rounds, copies, toasts, opens }
 }
 
 async function start($: Engine, cwd = HOME) {
@@ -121,7 +145,7 @@ async function start($: Engine, cwd = HOME) {
 
 async function band($: Engine, surface: (typeof SURFACES)[number] = 'terminal') {
   const ui = await $.ui.mount({ plugin: 'pr-weather', surface, component: 'AbovePrompt', props: PROPS })
-  const weather = await ui.find({ type: 'Text', text: /^PRs/ })
+  const weather = await ui.find({ key: 'weather' })
   const engine = await ui.find({ type: 'Text', text: 'prompt' })
   const links = await ui.findAll({ type: 'Link' })
   const refresh = await ui.find({ key: 'refresh' })
@@ -136,7 +160,7 @@ async function band($: Engine, surface: (typeof SURFACES)[number] = 'terminal') 
   }
 }
 
-async function press($: Engine, key: 'refresh' | 'mode') {
+async function press($: Engine, key: string) {
   const ui = await $.ui.mount({ plugin: 'pr-weather', surface: 'terminal', component: 'AbovePrompt', props: PROPS })
   await ui.press({ key })
   await ui.unmount()
@@ -224,6 +248,101 @@ describe('pr-weather band', () => {
     const drawn = await band($)
     expect(drawn.weather).toBe('PRs none updated just now')
     expect(drawn.refresh).toBe('↻')
+  })
+})
+
+describe('pressing a PR', () => {
+  const opened = () => ok('')
+
+  test('a local macOS session opens it in the browser', async ($, on) => {
+    const { clock, opens, copies, toasts } = world(on, { ledger: [ready('a', 7)], opener: opened })
+    await start($)
+    await clock.settle()
+    await press($, `pr:${url(7)}`)
+    expect(opens()).toEqual([['open', url(7)]])
+    expect(copies).toEqual([])
+    expect(toasts).toEqual([])
+  })
+
+  test('a local Linux desktop opens it with xdg-open', async ($, on) => {
+    const { clock, opens, copies } = world(on, { ledger: [ready('a', 7)], system: 'Linux', env: { WAYLAND_DISPLAY: 'wayland-0' }, opener: opened })
+    await start($)
+    await clock.settle()
+    await press($, `pr:${url(7)}`)
+    expect(opens()).toEqual([['xdg-open', url(7)]])
+    expect(copies).toEqual([])
+  })
+
+  test('a remote session copies the URL instead and says so', async ($, on) => {
+    const { clock, opens, copies, toasts } = world(on, { ledger: [ready('a', 7)], env: { SSH_CONNECTION: '10.0.0.2 51000 10.0.0.9 22' }, opener: opened })
+    await start($)
+    await clock.settle()
+    await press($, `pr:${url(7)}`)
+    expect(opens()).toEqual([])
+    expect(copies).toEqual([url(7)])
+    expect(toasts).toEqual(['Copied PR #7 URL'])
+  })
+
+  test('a Linux server without a desktop copies the URL', async ($, on) => {
+    const { clock, opens, copies, toasts } = world(on, { ledger: [ready('a', 7)], system: 'Linux', opener: opened })
+    await start($)
+    await clock.settle()
+    await press($, `pr:${url(7)}`)
+    expect(opens()).toEqual([])
+    expect(copies).toEqual([url(7)])
+    expect(toasts).toEqual(['Copied PR #7 URL'])
+  })
+
+  test('an opener that fails or is missing falls back to the copy', async ($, on) => {
+    const { clock, opens, copies, toasts } = world(on, { ledger: [ready('a', 7), ready('b', 8)], system: 'Linux', env: { DISPLAY: ':0' } })
+    await start($)
+    await clock.settle()
+    await press($, `pr:${url(7)}`)
+    expect(copies).toEqual([url(7)])
+    expect(toasts).toEqual(['Copied PR #7 URL'])
+    expect(opens()).toEqual([['xdg-open', url(7)]])
+  })
+
+  test('an opener exiting non-zero falls back to the copy', async ($, on) => {
+    const { clock, copies } = world(on, { ledger: [ready('a', 7)], opener: () => exit(1, 'LSOpenURLsWithRole() failed') })
+    await start($)
+    await clock.settle()
+    await press($, `pr:${url(7)}`)
+    expect(copies).toEqual([url(7)])
+  })
+
+  test('when the copy fails too, the toast shows the URL itself', async ($, on) => {
+    const { clock, toasts } = world(on, { ledger: [ready('a', 7)], env: { SSH_TTY: '/dev/pts/3' }, canCopy: false })
+    await start($)
+    await clock.settle()
+    await press($, `pr:${url(7)}`)
+    expect(toasts).toEqual([url(7)])
+  })
+
+  test('the host is read once, at the first press', async ($, on) => {
+    const { clock, runs, opens } = world(on, { ledger: [ready('a', 7), ready('b', 8)], opener: opened })
+    await start($)
+    await clock.settle()
+    expect(runs.some(argv => argv[0] === 'uname')).toBe(false)
+    await press($, `pr:${url(7)}`)
+    await press($, `pr:${url(8)}`)
+    expect(runs.filter(argv => argv[0] === 'uname')).toHaveLength(1)
+    expect(opens()).toEqual([['open', url(7)], ['open', url(8)]])
+  })
+
+  test('each PR is a plain button beside its linked glyph, on every surface', async ($, on) => {
+    const { clock } = world(on, { env: { TERM_PROGRAM: 'ghostty' }, ledger: [ready('a', 7)] })
+    await start($)
+    await clock.settle()
+    for (const surface of SURFACES) {
+      const ui = await $.ui.mount({ plugin: 'pr-weather', surface, component: 'AbovePrompt', props: PROPS })
+      const button = await ui.find({ key: `pr:${url(7)}` })
+      const link = await ui.find({ type: 'Link' })
+      await ui.unmount()
+      expect(button?.type).toBe('Button')
+      expect(button?.props).toMatchObject({ label: '#7', plain: true })
+      expect(link?.props).toMatchObject({ href: url(7), label: '☀' })
+    }
   })
 })
 
@@ -541,13 +660,13 @@ describe('beside another band plugin', () => {
       await clock.advance(9 * MINUTE)
       for (const surface of SURFACES) {
         const ui = await $.ui.mount({ plugin: 'pr-weather', surface, component: 'AbovePrompt', props: PROPS })
-        const texts = (await ui.findAll({ type: 'Text' })).map(text => text.text)
+        const elements = await ui.findAll({})
         await ui.unmount()
-        const weather = texts.findIndex(text => text.startsWith('PRs'))
-        const lamp = texts.indexOf('● lamp-test needs-decision')
-        expect(texts[weather]).toBe('PRs ☀ #7 updated just now')
+        const weather = elements.findIndex(element => element.key === 'weather')
+        const lamp = elements.findIndex(element => element.text === '● lamp-test needs-decision')
+        expect(elements[weather]?.text).toBe('PRs ☀ #7 updated just now')
         expect(lamp).toBeGreaterThan(weather)
-        expect(texts.some(text => text.includes('fleet ledger'))).toBe(false)
+        expect(elements.some(element => element.text.includes('fleet ledger'))).toBe(false)
       }
       expect(logs).toEqual([MISSING_MATE])
     })

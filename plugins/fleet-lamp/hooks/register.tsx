@@ -2,6 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Followed } from '../types'
+import { fitLine } from './line'
+import type { LampLine } from './line'
 import { applyLines, EMPTY, lampOf } from './rules'
 import { parseSecondMates } from './secondmates'
 import type { SecondMate } from './secondmates'
@@ -88,46 +90,33 @@ export const register: Register = (on, options) => {
     const more = lamp.count > 1 ? `  +${lamp.count - 1} more` : ''
     // Which home the signal came from, once there is more than one to tell apart.
     const label = homes.length > 1 ? homes.find(followed => followed.home === lamp.signal.home)?.label : undefined
-    const from = label === undefined ? null : <Text dimColor>{label} </Text>
+    const from = label === undefined ? '' : `${label} · `
+    const isRed = lamp.color === 'red'
+    const head = isRed ? '' : 'PR ready '
+    const parts: LampLine = isRed
+      ? { lead: `● ${from}`, main: lamp.signal.task, tail: ` ${lamp.signal.state}${lamp.signal.reason === '' ? '' : `: ${lamp.signal.reason}`}`, more }
+      : {
+          lead: `● ${from}${head}`,
+          main: lamp.signal.pr ?? lamp.signal.task,
+          tail: lamp.signal.pr === null ? '' : `  ${lamp.signal.task}`,
+          more,
+        }
+    // The terminal draws its [-] collapse control in the row's last three cells; keep one more of air.
+    const columns = e.props.bodyColumns - (e.surface === 'terminal' ? 4 : 0)
+    const { main, tail } = fitLine(parts, columns)
 
-    if (lamp.color === 'red') {
-      const { task, state, reason } = lamp.signal
-      return (
-        <Box flexDirection="column">
-          {below}
-          <Box key="lamp" flexDirection="row" width={e.props.bodyColumns}>
-            <Text color="error">● </Text>
-            {from}
-            <Text bold wrap="truncate-end">
-              {task}
-            </Text>
-            <Box flexShrink={1}>
-              <Text wrap="truncate-end">
-                {' '}
-                {state}
-                {reason === '' ? '' : `: ${reason}`}
-              </Text>
-            </Box>
-            <Text dimColor>{more}</Text>
-          </Box>
-        </Box>
-      )
-    }
-
-    const { task, pr } = lamp.signal
+    // One Text, fitted beforehand: the line never wraps, and no part's spacing is squeezed away.
     return (
       <Box flexDirection="column">
         {below}
-        <Box key="lamp" flexDirection="row" width={e.props.bodyColumns}>
-          <Text color="success">● </Text>
-          {from}
-          <Text bold>PR ready </Text>
-          <Box flexShrink={1}>
-            <Text wrap="truncate-end">{pr ?? task}</Text>
-          </Box>
-          <Text dimColor>
-            {pr === null ? '' : `  ${task}`}
-            {more}
+        <Box key="lamp" flexDirection="row">
+          <Text wrap="truncate-end">
+            <Text color={isRed ? 'error' : 'success'}>●</Text> <Text dimColor>{from}</Text>
+            {/* A red reads `task state: reason`; a green `PR ready <url>  task`, its task dim. */}
+            <Text bold>{isRed ? main : head}</Text>
+            {isRed ? tail : main}
+            <Text dimColor>{isRed ? '' : tail}</Text>
+            <Text dimColor>{more}</Text>
           </Text>
         </Box>
       </Box>
