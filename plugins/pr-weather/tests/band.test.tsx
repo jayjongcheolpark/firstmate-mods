@@ -514,3 +514,53 @@ describe('second mate homes', () => {
     expect(runs.filter(argv => argv[0] === 'grep').map(argv => argv.at(-1))).toEqual([LEDGER])
   })
 })
+
+// Another plugin's band row, as fleet-lamp draws a red lamp: whatever is beneath, then the lamp.
+// Self-contained, as a test's inline plugin must be.
+function lampRow(on: On) {
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const { Box, Text } = $.ui.resolve(e)
+    const below = await next(e)
+    return (
+      <Box flexDirection="column">
+        {below}
+        <Text key="lamp">● lamp-test needs-decision</Text>
+      </Box>
+    )
+  })
+}
+
+describe('beside another band plugin', () => {
+  const MISSING_MATE = `second mate sbb-mate has no fleet ledger, so its PRs are left out: touch ${MATE}/config/fleet-ledger`
+
+  for (const tier of ['prepend', 'append'] as const) {
+    test(`a second mate without a ledger keeps the PRs row beside the lamp, with the ${tier} tier`, { plugins: [{ name: 'lamp', tier, register: lampRow }] }, async ($, on) => {
+      const { clock, logs } = world(on, { ledger: [ready('a', 7)], registry: entry('sbb-mate', MATE), mates: { [MATE]: null } })
+      await start($)
+      await clock.settle()
+      await clock.advance(9 * MINUTE)
+      for (const surface of SURFACES) {
+        const ui = await $.ui.mount({ plugin: 'pr-weather', surface, component: 'AbovePrompt', props: PROPS })
+        const texts = (await ui.findAll({ type: 'Text' })).map(text => text.text)
+        await ui.unmount()
+        const weather = texts.findIndex(text => text.startsWith('PRs'))
+        const lamp = texts.indexOf('● lamp-test needs-decision')
+        expect(texts[weather]).toBe('PRs ☀ #7 updated just now')
+        expect(lamp).toBeGreaterThan(weather)
+        expect(texts.some(text => text.includes('fleet ledger'))).toBe(false)
+      }
+      expect(logs).toEqual([MISSING_MATE])
+    })
+  }
+
+  test('the missing-ledger note is logged again in the next session', async ($, on) => {
+    const { clock, logs } = world(on, { ledger: [ready('a', 7)], registry: entry('sbb-mate', MATE), mates: { [MATE]: null } })
+    await start($)
+    await clock.settle()
+    await clock.advance(9 * MINUTE)
+    expect(logs).toEqual([MISSING_MATE])
+    await start($)
+    await clock.settle()
+    expect(logs).toEqual([MISSING_MATE, MISSING_MATE])
+  })
+})
