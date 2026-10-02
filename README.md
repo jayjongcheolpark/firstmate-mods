@@ -1,5 +1,8 @@
 # firstmate-mods
 
+<img width="2306" height="1937" alt="image" src="https://github.com/user-attachments/assets/b7c507c9-6256-40af-9023-78929b30ab83" />
+
+
 Claude Code mods for [firstmate](https://github.com/kunchenguid/firstmate) fleets, published as a Claude Code plugin marketplace.
 
 | Mod | What it does |
