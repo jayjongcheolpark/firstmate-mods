@@ -219,96 +219,23 @@ describe('the band', () => {
 })
 
 describe('second mate homes', () => {
-  test('follows a second mate ledger from its end and names the home a red came from', async ($, on) => {
-    const files: Record<string, string> = { [FLAG]: '', [LEDGER]: '', [MATE_FLAG]: '', [REGISTRY]: entry('constructease', MATE) }
-    const fm = world(on, files)
-    fm.appendTo(MATE_LEDGER, status('old', 'blocked', ' from yesterday'))
-    await start($)
-    expect(await bandText($)).toEqual(['', ''])
-
-    fm.appendTo(MATE_LEDGER, status('ce-po', 'needs-decision', ' pick a vendor'))
-    await fm.clock.advance(2000)
-    expect(await bandText($)).toEqual(Array(2).fill('● constructease · ce-po needs-decision: pick a vendor'))
-
-    fm.append(status('api', 'failed', ' tests red'))
-    await fm.clock.advance(2000)
-    expect((await bandText($))[0]).toBe('● main · api failed: tests red  +1 more')
-
-    await prompt($, 'composer')
-    expect(await bandText($)).toEqual(['', ''])
-
-    fm.appendTo(MATE_LEDGER, { v: 1, ts: 2, event: 'task.pr_ready', task: 'ce-po', pr: 'https://github.com/acme/ce/pull/3' })
-    await fm.clock.advance(2000)
-    expect((await bandText($))[0]).toBe('● constructease · PR ready https://github.com/acme/ce/pull/3  ce-po')
-  })
-
-  test('keeps an offset per home, so one ledger truncating rereads only that one', async ($, on) => {
-    const files: Record<string, string> = { [FLAG]: '', [MATE_FLAG]: '', [REGISTRY]: entry('constructease', MATE) }
-    const fm = world(on, files)
-    fm.append(status('old', 'working', ' a long main history line'))
-    fm.appendTo(MATE_LEDGER, status('old', 'working', ' a long second mate history line'))
-    await start($)
-    files[MATE_LEDGER] = ''
-    fm.appendTo(MATE_LEDGER, status('ce', 'blocked', ' x'))
-    await fm.clock.advance(2000)
-    expect((await bandText($))[0]).toBe('● constructease · ce blocked: x')
-    fm.append(status('api', 'blocked', ' y'))
-    await fm.clock.advance(2000)
-    expect((await bandText($))[0]).toBe('● main · api blocked: y  +1 more')
-  })
-
-  test('with only the main home followed, the band names no home', async ($, on) => {
-    const files: Record<string, string> = { [FLAG]: '', [LEDGER]: '', [REGISTRY]: entry('gone', '/work/gone') }
-    const fm = world(on, files)
-    await start($)
-    fm.append(status('api', 'failed', ' tests red'))
-    await fm.clock.advance(2000)
-    expect((await bandText($))[0]).toBe('● api failed: tests red')
-  })
-
-  test('a second mate with its ledger off is noted once and not followed', async ($, on) => {
-    const files: Record<string, string> = { [FLAG]: '', [LEDGER]: '', [MATE_LEDGER]: '', [REGISTRY]: entry('constructease', MATE) }
-    const fm = world(on, files)
-    await start($)
-    fm.appendTo(MATE_LEDGER, status('ce', 'blocked', ' x'))
-    await fm.clock.advance(6000)
-    expect(await bandText($)).toEqual(['', ''])
-    expect(fm.logs).toEqual([
-      `the fleet ledger is off in second mate constructease (${MATE}), so the lamp does not follow it; turn it on with: touch ${MATE_FLAG}`,
-    ])
-  })
-
-  test('the second mates are followed even while the main ledger is off', async ($, on) => {
-    const files: Record<string, string> = { [LEDGER]: '', [MATE_FLAG]: '', [MATE_LEDGER]: '', [REGISTRY]: entry('constructease', MATE) }
-    const fm = world(on, files)
-    await start($)
-    fm.appendTo(MATE_LEDGER, status('ce', 'blocked', ' x'))
-    await fm.clock.advance(2000)
-    expect((await bandText($))[0]).toBe('● ce blocked: x')
-    expect(fm.logs.filter(text => text.includes(`touch ${FLAG}`))).toHaveLength(1)
-  })
-
-  test('a second mate registered mid-session is followed within a minute', async ($, on) => {
-    const files: Record<string, string> = { [FLAG]: '', [LEDGER]: '', [MATE_FLAG]: '', [MATE_LEDGER]: '' }
-    const fm = world(on, files)
-    await start($)
-    files[REGISTRY] = entry('constructease', MATE)
-    await fm.clock.advance(60_000)
-    fm.appendTo(MATE_LEDGER, status('ce', 'blocked', ' x'))
-    await fm.clock.advance(2000)
-    expect((await bandText($))[0]).toBe('● constructease · ce blocked: x')
-  })
-
-  test('includeSecondMates off follows the main home alone', { options: { includeSecondMates: false } }, async ($, on) => {
+  // A second mate's decisions reach the captain only once its firstmate records them in the main ledger.
+  test("a second mate's ledger never lights the band; the main home's does", async ($, on) => {
     const files: Record<string, string> = { [FLAG]: '', [LEDGER]: '', [MATE_FLAG]: '', [MATE_LEDGER]: '', [REGISTRY]: entry('constructease', MATE) }
     const fm = world(on, files)
     await start($)
-    fm.appendTo(MATE_LEDGER, status('ce', 'blocked', ' x'))
-    await fm.clock.advance(2000)
+    fm.appendTo(
+      MATE_LEDGER,
+      status('install-date-match-direction', 'needs-decision', ' pick a direction'),
+      { v: 1, ts: 2, event: 'task.pr_ready', task: 'ce-po', pr: 'https://github.com/acme/ce/pull/3' },
+    )
+    await fm.clock.advance(120_000)
     expect(await bandText($)).toEqual(['', ''])
-    fm.append(status('api', 'failed', ' tests red'))
+
+    fm.append(status('constructease', 'needs-decision', ' install-date-match-direction: pick a direction'))
     await fm.clock.advance(2000)
-    expect((await bandText($))[0]).toBe('● api failed: tests red')
+    expect(await bandText($)).toEqual(Array(2).fill('● constructease needs-decision: install-date-match-direction: pick a direction'))
+    expect(fm.touched.filter(path => path === REGISTRY || path.startsWith(`${MATE}/`))).toEqual([])
   })
 })
 
@@ -323,11 +250,9 @@ function prsRow(on: On) {
 }
 
 describe('beside another band plugin', () => {
-  const MISSING_MATE = `the fleet ledger is off in second mate sbb-mate (${MATE}), so the lamp does not follow it; turn it on with: touch ${MATE_FLAG}`
-
   for (const tier of ['prepend', 'append'] as const) {
     test(`the lamp and the other row both show, with the ${tier} tier`, { plugins: [{ name: 'prs', tier, register: prsRow }] }, async ($, on) => {
-      const files: Record<string, string> = { [FLAG]: '', [LEDGER]: '', [REGISTRY]: entry('sbb-mate', MATE), [`${MATE}/data`]: '' }
+      const files: Record<string, string> = { [FLAG]: '', [LEDGER]: '' }
       const fm = world(on, files)
       await start($)
       expect(await bandText($)).toEqual(['PRs none', 'PRs none'])
@@ -336,7 +261,7 @@ describe('beside another band plugin', () => {
       await fm.clock.advance(2000)
       // The other plugin's row first, the lamp below it, whichever side of the lamp it loads on.
       expect(await bandText($)).toEqual(Array(2).fill('PRs none● lamp-test needs-decision: TEST - fleet-lamp check, not a real decision'))
-      expect(fm.logs).toEqual([MISSING_MATE])
+      expect(fm.logs).toEqual([])
     })
   }
 
@@ -350,17 +275,18 @@ describe('beside another band plugin', () => {
   })
 
   test('the missing-ledger note is a transcript line, once per session, never in the band', async ($, on) => {
-    const files: Record<string, string> = { [FLAG]: '', [LEDGER]: '', [REGISTRY]: entry('sbb-mate', MATE), [`${MATE}/data`]: '' }
+    const files: Record<string, string> = { [LEDGER]: '' }
     const fm = world(on, files)
+    const missing = `the fleet ledger is off in ${HOME}; turn it on with: touch ${FLAG}`
     await start($)
     fm.append(status('t', 'blocked', ' x'))
     await fm.clock.advance(10_000)
-    expect(fm.logs).toEqual([MISSING_MATE])
+    expect(fm.logs).toEqual([missing])
     expect((await bandText($)).some(text => text.includes('fleet ledger'))).toBe(false)
 
     // The next session says it again, so a ledger still off is not forgotten.
     await start($)
-    expect(fm.logs).toEqual([MISSING_MATE, MISSING_MATE])
+    expect(fm.logs).toEqual([missing, missing])
   })
 })
 
@@ -369,17 +295,11 @@ describe('the line at any width', () => {
   const narrow = (bodyColumns: number) => ({ ...BAND, props: { ...BAND.props, bodyColumns } })
 
   for (const bodyColumns of [60, 100, 160]) {
-    test(`a second mate red with a long reason stays one spaced line at ${bodyColumns} columns`, async ($, on) => {
-      const files: Record<string, string> = {
-        [FLAG]: '',
-        [LEDGER]: '',
-        [REGISTRY]: entry('constructease', MATE),
-        [MATE_FLAG]: '',
-        [MATE_LEDGER]: '',
-      }
+    test(`a red with a long reason stays one spaced line at ${bodyColumns} columns`, async ($, on) => {
+      const files: Record<string, string> = { [FLAG]: '', [LEDGER]: '' }
       const fm = world(on, files)
       await start($)
-      fm.appendTo(MATE_LEDGER, status('ce-ies-file-sync-discovery', 'needs-decision', REASON), status('ce-other', 'blocked', ' x'))
+      fm.append(status('ce-ies-file-sync-discovery', 'needs-decision', REASON), status('ce-other', 'blocked', ' x'))
       await fm.clock.advance(2000)
       for (const surface of SURFACES) {
         const ui = await $.ui.mount({ ...narrow(bodyColumns), surface })
@@ -387,7 +307,7 @@ describe('the line at any width', () => {
         await ui.unmount()
         // The terminal keeps its last four cells for the [-] control.
         const room = bodyColumns - (surface === 'terminal' ? 4 : 0)
-        expect(lamp.startsWith('● constructease · ce-')).toBe(true)
+        expect(lamp.startsWith('● ce-')).toBe(true)
         expect(lamp.endsWith('  +1 more')).toBe(true)
         expect([...lamp].length).toBeLessThanOrEqual(room)
         expect(lamp.includes('\n')).toBe(false)

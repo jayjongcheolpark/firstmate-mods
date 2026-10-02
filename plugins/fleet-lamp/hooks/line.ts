@@ -37,7 +37,7 @@ export function truncateCells(text: string, max: number): string {
 
 /**
  * The lamp's line in parts, drawn in this order:
- * `lead` (the dot and the home label, kept), `main` (the task or the PR), `tail` (the state and
+ * `lead` (the dot, and for a green `PR ready`, kept), `main` (the task or the PR), `tail` (the state and
  * reason, or the task beside a PR), then `more` (the `+N more` count, kept whole).
  */
 export type LampLine = { lead: string; main: string; tail: string; more: string }

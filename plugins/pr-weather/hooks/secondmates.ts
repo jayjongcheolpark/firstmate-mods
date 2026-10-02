@@ -1,6 +1,5 @@
 // The second mate homes a firstmate home has registered in data/secondmates.md.
-// Pure, so the tests hold it without a file system. fleet-lamp and pr-weather each carry an
-// identical copy: plugins cannot import each other.
+// Pure, so the tests hold it without a file system.
 export type SecondMate = { id: string; home: string }
 
 // A local entry is `- <id> - <charter> (home: <path>; scope: ...)`; a remote one puts

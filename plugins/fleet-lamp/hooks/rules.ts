@@ -29,13 +29,13 @@ function reasonOf(value: string, state: string): string {
   return tags === null ? folded : folded.slice(state.length + tags[0].length).trim()
 }
 
-/** Folds one record of `home`'s ledger into the latch; records it does not recognize leave it as it was. */
-export function apply(latch: Latch, record: LedgerRecord, home: string): Latch {
+/** Folds one ledger record into the latch; records it does not recognize leave it as it was. */
+export function apply(latch: Latch, record: LedgerRecord): Latch {
   const task = text(record.task)
   const ts = typeof record.ts === 'number' ? record.ts : 0
 
   if (record.event === 'task.pr_ready') {
-    return addGreen(latch, { home, task, pr: text(record.pr) || null, ts })
+    return addGreen(latch, { task, pr: text(record.pr) || null, ts })
   }
   if (record.event !== 'task.status') {
     return latch
@@ -48,22 +48,22 @@ export function apply(latch: Latch, record: LedgerRecord, home: string): Latch {
   if (state === 'resolved') {
     return key === null
       ? latch
-      : { ...latch, reds: latch.reds.filter(red => !(red.home === home && red.task === task && red.key === key)) }
+      : { ...latch, reds: latch.reds.filter(red => !(red.task === task && red.key === key)) }
   }
   if (RED_STATES.has(state) && !body.includes('ask-user findings=') && !CAPTAIN_ANSWER.test(body)) {
-    return addRed(latch, { home, task, key, state, reason: reasonOf(body, state), ts })
+    return addRed(latch, { task, key, state, reason: reasonOf(body, state), ts })
   }
   if (state === 'done' && GREEN_PATTERNS.some(pattern => pattern.test(body)) && !LANDED.test(body)) {
-    return addGreen(latch, { home, task, pr: body.match(URL)?.[0] ?? null, ts })
+    return addGreen(latch, { task, pr: body.match(URL)?.[0] ?? null, ts })
   }
   return latch
 }
 
-/** Parses text appended to `home`'s ledger, complete lines only, and folds each record in order. */
-export function applyLines(latch: Latch, lines: string, home: string): Latch {
+/** Parses text appended to the ledger, complete lines only, and folds each record in order. */
+export function applyLines(latch: Latch, lines: string): Latch {
   return lines.split('\n').reduce((next, line) => {
     const record = parse(line)
-    return record === null ? next : apply(next, record, home)
+    return record === null ? next : apply(next, record)
   }, latch)
 }
 
@@ -82,7 +82,6 @@ function parse(line: string): LedgerRecord | null {
 // The ledger delivers at least once, so a repeated record replaces its twin rather than stacking.
 function addRed(latch: Latch, red: RedSignal): Latch {
   const isSame = (other: RedSignal) =>
-    other.home === red.home &&
     other.task === red.task &&
     (red.key === null ? other.key === null && other.reason === red.reason : other.key === red.key)
   return { ...latch, reds: [...latch.reds.filter(other => !isSame(other)), red] }
@@ -90,7 +89,7 @@ function addRed(latch: Latch, red: RedSignal): Latch {
 
 function addGreen(latch: Latch, green: GreenSignal): Latch {
   const isSame = (other: GreenSignal) =>
-    green.pr === null ? other.pr === null && other.home === green.home && other.task === green.task : other.pr === green.pr
+    green.pr === null ? other.pr === null && other.task === green.task : other.pr === green.pr
   return { ...latch, greens: [...latch.greens.filter(other => !isSame(other)), green] }
 }
 

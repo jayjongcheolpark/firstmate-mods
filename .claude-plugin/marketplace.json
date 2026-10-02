@@ -11,7 +11,7 @@
     {
       "name": "fleet-lamp",
       "description": "A lamp above the prompt: red when the firstmate fleet needs you, green when a PR is ready.",
-      "version": "0.2.3",
+      "version": "0.2.4",
       "source": "./plugins/fleet-lamp",
       "category": "productivity"
     },
