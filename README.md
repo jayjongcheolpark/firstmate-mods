@@ -40,13 +40,13 @@ When nothing needs you, the band shows nothing.
 
 ### What it shows
 
-- 🔴 **Red** (strongest): a task is waiting on you. The band shows the task, its state and the first line of its reason. The newest open red comes first, and `+N more` counts the others.
+- 🔴 **Red** (strongest): a task is waiting on you. The band shows the task, its state and its reason. The reason is the status text without the status line's own lead (the state word, any `[key=...]`, `[at=...]` or `[corr=...]` tags and the colon), so `needs-decision [key=pick]: A or B?` shows as `needs-decision: A or B?`. The newest open red comes first, and `+N more` counts the others.
 - 🟢 **Green**: a PR is ready for review. The band shows the PR URL and its task.
 - **Nothing**: the fleet doesn't need you.
 
 ### The rules
 
-The band reads only `task.status` and `task.pr_ready` records from firstmate's fleet activity ledger, `state/fleet-ledger.jsonl` (see `docs/fleet-ledger.md` in the firstmate repository).
+The band reads only `task.status` and `task.pr_ready` records from firstmate's fleet activity ledger, `state/fleet-ledger.jsonl` (see `docs/fleet-ledger.md` in the firstmate repository), in the home and in its [second mates](#second-mates)' homes.
 
 - **Red**: a `task.status` record whose state is `needs-decision`, `blocked` or `failed`. Two kinds of record are left out:
   - worker validation findings that firstmate decides itself (text contains `ask-user findings=`);
@@ -66,7 +66,7 @@ The ledger is opt-in. In your firstmate home, create the flag:
 touch config/fleet-ledger
 ```
 
-Delete the flag to turn the ledger off. While the ledger is off, the band shows nothing. The first time a session finds the ledger off, the mod adds one dim line to the transcript that tells you how to turn it on.
+Delete the flag to turn the ledger off. While no followed home has its ledger on, the band shows nothing. The first time a session finds the home's ledger off, the mod adds one dim line to the transcript that tells you how to turn it on.
 
 ### How it finds your fleet
 
@@ -78,14 +78,31 @@ To follow a home from somewhere else, set the plugin's `home` option in `/config
 echo '{"home": "~/firstmate"}' | claude plugin configure fleet-lamp@firstmate-mods --values-stdin
 ```
 
-The mod reads two paths in that home: the `config/fleet-ledger` flag and `state/fleet-ledger.jsonl`. It reads no other state file, makes no network calls and controls no hardware.
+### Second mates
+
+A firstmate with second mates records their work in each second mate's own home: a ConstructEase PR dispatched by a second mate lands in that home's ledger, not the main one. So the mod follows those ledgers too.
+
+- The mod reads the home's `data/secondmates.md` and takes every registered entry with `(home: <absolute path>; ...)` whose directory exists on this machine. Remote entries (`host: ...; root: ...; home: ...`) are skipped: the mod makes no SSH or network calls.
+- Each second mate home is followed exactly like the main one, with its own byte offset.
+- A second mate home whose ledger is off is not followed, and the mod adds one dim line to the transcript that names it and tells you how to turn it on.
+- When more than one home is followed, the band names the home a signal came from, dim, after the dot: `main` for the session's own home, or the second mate's id (`● constructease ce-po needs-decision: pick a vendor`).
+- Your next prompt clears the signals of every home.
+- The mod reads `data/secondmates.md` again every minute, so a second mate added mid-session is followed without a reload.
+
+To follow the main home alone, turn off the `includeSecondMates` option:
+
+```sh
+echo '{"includeSecondMates": false}' | claude plugin configure fleet-lamp@firstmate-mods --values-stdin
+```
+
+The mod reads these paths: `data/secondmates.md` in the main home, and the `config/fleet-ledger` flag and `state/fleet-ledger.jsonl` in each followed home. It reads no other state file, makes no network calls and controls no hardware.
 
 ### How it reads the ledger
 
-- The mod checks the ledger every 2 seconds and reads only the lines added since the last check, from a saved byte offset. A partial last line waits for the next check.
-- On the first look in a session, the mod starts at the end of the ledger, so old history does not turn the band red.
+- The mod checks each followed ledger every 2 seconds and reads only the lines added since the last check, from a byte offset saved per home. A partial last line waits for the next check.
+- On the first look at a ledger in a session, the mod starts at its end, so old history does not turn the band red. That holds for a second mate found mid-session too.
 - The offset and the signals are kept in the session's state, so a reload of the mod does not read old lines again.
-- If the ledger is truncated, reading starts again from the top.
+- If a ledger is truncated, reading that ledger starts again from the top.
 - The ledger never rotates, and `$.fs.read` reads whole files of at most 4 MiB. So the mod reads the new bytes with `tail -c +<offset>`.
 
 ### Developing
@@ -93,13 +110,13 @@ The mod reads two paths in that home: the `config/fleet-ledger` flag and `state/
 ```sh
 claude plugin validate .                    # the marketplace
 claude plugin validate plugins/fleet-lamp   # the plugin and its hooks module
-claude plugin test plugins/fleet-lamp       # the rule and band tests
+claude plugin test plugins/fleet-lamp       # the rule, second mate and band tests
 npx -p typescript tsc -p plugins/fleet-lamp  # type-check, once a session has loaded the mod
 ```
 
 A session that loads the mod from a folder you own (`--plugin-dir`) writes the API types to `plugins/fleet-lamp/.claude-plugin/types/`, which `tsconfig.json` extends.
 
-The rules are pure functions in `plugins/fleet-lamp/hooks/rules.ts`. The hooks module that reads the ledger and draws the band is `plugins/fleet-lamp/hooks/register.tsx`.
+The rules are pure functions in `plugins/fleet-lamp/hooks/rules.ts`, and the `data/secondmates.md` parser is `plugins/fleet-lamp/hooks/secondmates.ts`. pr-weather carries an identical copy of that parser, because plugins cannot import each other. The hooks module that reads the ledgers and draws the band is `plugins/fleet-lamp/hooks/register.tsx`.
 
 ## pr-weather
 
@@ -157,10 +174,13 @@ Each refresh first reads your remaining GitHub quota with `gh api rate_limit`, w
 With the default `fleet` source, the PRs come from firstmate's fleet activity ledger, `state/fleet-ledger.jsonl` (see `docs/fleet-ledger.md` in the firstmate repository):
 
 - a `task.pr_ready` record adds its PR, and a later one for the same task replaces it;
-- a `task.merged` or `task.cleaned_up` record for that task removes it;
+- a `done` status record that reports a ready PR does the same, by fleet-lamp's green rule (`PR https://...`, `PR ready: https://...`, `child X done: PR https://...`);
+- a `task.merged` or `task.cleaned_up` record for that task removes it, and so does a `done` record that says the PR `landed` or `merged`;
 - a PR that GitHub reports as merged or closed is left out.
 
-The ledger is opt-in: create the flag `config/fleet-ledger` in your firstmate home. Until it exists, the band shows nothing, and the mod adds one dim line to the transcript that tells you how to turn it on.
+The ledger is opt-in: create the flag `config/fleet-ledger` in your firstmate home. Until the ledger exists, the band shows nothing, and the mod adds one dim line to the transcript that tells you how to turn it on.
+
+The mod also reads the ledgers of the second mate homes registered in the home's `data/secondmates.md` that exist on this machine, the same way fleet-lamp finds them (see [Second mates](#second-mates)). The band shows the PRs of every home, each PR once. A second mate home without a ledger is left out, with one dim line in the transcript that names it. While the main home has no ledger but a second mate does, the band shows the second mate's PRs and the mod adds the turn-it-on line once. Each refresh reads `data/secondmates.md` again, so a new second mate shows on the next refresh. Turn off `includeSecondMates` to read the main home alone.
 
 The band shows only in a firstmate session: one whose working directory is at or under a firstmate home (a directory whose `AGENTS.md` starts with `# Firstmate` and that has a `state/` folder). In any other session the mod draws nothing and makes no calls.
 
@@ -180,6 +200,7 @@ echo '{"mode": "manual", "refreshMinutes": 5}' | claude plugin configure pr-weat
 | `mode` | `auto` | `auto` refreshes on the interval; `manual` refreshes only when you ask. |
 | `refreshMinutes` | `3` | How often auto mode refreshes, in minutes (at least 1). |
 | `home` | empty | The firstmate home to read (`~` allowed). Empty: the nearest one at or above the session's working directory. When set, the band shows in every session. |
+| `includeSecondMates` | `true` | Also read the ledgers of the home's local second mate homes (`fleet` source). |
 
 ### Requirements
 
@@ -191,8 +212,8 @@ Each refresh makes one `gh api rate_limit` call, then two calls per PR: `gh pr v
 
 ```sh
 claude plugin validate plugins/pr-weather   # the plugin and its hooks module
-claude plugin test plugins/pr-weather       # the weather, ledger, layout, mode and band tests
+claude plugin test plugins/pr-weather       # the weather, ledger, second mate, layout, mode and band tests
 npx -p typescript tsc -p plugins/pr-weather  # type-check, once a session has loaded the mod
 ```
 
-The pure parts (glyphs, check classification, the ledger, the band layout, quota and backoff) are in `plugins/pr-weather/hooks/weather.ts`. The hooks module that calls `gh`, schedules refreshes and draws the band is `plugins/pr-weather/hooks/register.tsx`.
+The pure parts (glyphs, check classification, the ledger, the band layout, quota and backoff) are in `plugins/pr-weather/hooks/weather.ts`, and the `data/secondmates.md` parser is `plugins/pr-weather/hooks/secondmates.ts`. The hooks module that calls `gh`, schedules refreshes and draws the band is `plugins/pr-weather/hooks/register.tsx`.
