@@ -75,7 +75,7 @@ Delete the flag to turn the ledger off. While no followed home has its ledger on
 
 ### How it finds your fleet
 
-The mod looks for the firstmate home at or above the session's working directory: the nearest directory whose `AGENTS.md` names firstmate and that has a `state/` folder. Start your firstmate session in its home, as usual, and the mod finds it.
+The mod looks for the firstmate home at or above the session's working directory: the nearest directory whose `AGENTS.md` has a `# Firstmate` heading line and that has a `state/` folder. Start your firstmate session in its home, as usual, and the mod finds it. A `claude -p` run or an SDK session, where no one is at the prompt, follows no ledger.
 
 To follow a home from somewhere else, set the plugin's `home` option in `/config`, or from a shell:
 
@@ -148,7 +148,7 @@ After the PRs come:
 
 - `+N more` when the PRs do not fit on one line;
 - `updated 2m ago`, the time of the last successful refresh;
-- `(stale)` when the last refresh failed, so the glyphs are from an earlier one;
+- `(stale)` when the last refresh failed, so the glyphs are from an earlier one. When the lookup of one PR fails, that PR alone keeps its last glyph, or stays out of the band until a lookup succeeds;
 - `low quota, every 12m` while auto mode backs off, or `rate-limited, resets in 17m` while GitHub's rate limit holds every refresh;
 - the refresh button `[ ↻ ]` (`[ … ]` while a refresh runs) and the mode button `[ auto ]` or `[ manual ]`.
 
@@ -204,7 +204,7 @@ The ledger is opt-in: create the flag `config/fleet-ledger` in your firstmate ho
 
 The mod also reads the ledgers of the second mate homes registered in the home's `data/secondmates.md` that exist on this machine, the same way fleet-lamp finds them (see [Second mates](#second-mates)). The band shows the PRs of every home, each PR once. A second mate home without a ledger is left out, with one dim line in the transcript that names it. While the main home has no ledger but a second mate does, the band shows the second mate's PRs and the mod adds the turn-it-on line once. Each refresh reads `data/secondmates.md` again, so a new second mate shows on the next refresh. Turn off `includeSecondMates` to read the main home alone.
 
-The band shows only in a firstmate session: one whose working directory is at or under a firstmate home (a directory whose `AGENTS.md` starts with `# Firstmate` and that has a `state/` folder). In any other session the mod draws nothing and makes no calls.
+The band shows only in a firstmate session: one whose working directory is at or under a firstmate home (a directory whose `AGENTS.md` has a `# Firstmate` heading line and that has a `state/` folder). In any other session the mod draws nothing and makes no calls. With either source, a `claude -p` run or an SDK session, where no one is at the prompt, also draws nothing and makes no calls.
 
 With the `mine` source, the band shows your own open PRs in the session's repository (`gh pr list --author @me`), in any session inside a git repository.
 

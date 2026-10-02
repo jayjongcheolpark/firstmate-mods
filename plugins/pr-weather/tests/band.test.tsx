@@ -43,6 +43,8 @@ type World = {
   env?: Record<string, string>
   // Answers every gh call, rate_limit included, in place of the views and quota above.
   gh?: (argv: readonly string[]) => ProcessRunResult | Promise<ProcessRunResult>
+  // The gh calls that fail with a server error, ahead of every other answer.
+  fails?: (argv: readonly string[]) => boolean
   // What `uname -s` prints; the machine's browser opener (open, xdg-open) answers `opener`.
   system?: string
   opener?: (argv: readonly string[]) => ProcessRunResult
@@ -108,6 +110,7 @@ function world(on: On, w: World) {
       return w.opener(argv)
     }
     if (argv[0] !== 'gh') throw new Error(`unexpected ${argv.join(' ')}`)
+    if (w.fails?.(argv)) return exit(1, 'HTTP 500: Internal Server Error')
     if (w.gh) return w.gh(argv)
     if (argv[1] === 'api' && argv[2] === 'rate_limit') {
       const q = w.quota ?? { remaining: 5000, resetAt: T0 + 60 * MINUTE }
@@ -223,8 +226,8 @@ describe('pr-weather band', () => {
     const { clock } = world(on, {
       ledger: [ready('a', 7)],
       gh: argv => {
-        if (argv[2] === 'rate_limit') return noQuota
         if (isDown) return exit(1, 'HTTP 502: Bad Gateway')
+        if (argv[2] === 'rate_limit') return noQuota
         return argv[1] === 'api' ? noRuns : view7(checks)
       },
     })
@@ -239,6 +242,38 @@ describe('pr-weather band', () => {
     isDown = true
     await clock.advance(3 * MINUTE)
     expect((await band($)).weather).toBe('PRs ☁ #7 updated 3m ago (stale)')
+  })
+
+  test("one PR's failed lookup keeps its last weather and leaves the rest fresh", async ($, on) => {
+    let isFailing = false
+    const views: Record<number, View> = { 8: { isDraft: true } }
+    const { clock, logs } = world(on, {
+      ledger: [ready('a', 7), ready('b', 8)],
+      views,
+      fails: argv => isFailing && argv[1] === 'api' && (argv.at(-1) ?? '').includes('head_sha=sha8'),
+    })
+    await start($)
+    await clock.settle()
+    expect((await band($)).weather).toBe('PRs ☀ #7 ✎ #8 updated just now')
+
+    // #8's held-runs lookup fails; #7 turns red all the same.
+    isFailing = true
+    views[7] = { checks: [failure] }
+    views[8] = { held: true }
+    await clock.advance(3 * MINUTE)
+    expect((await band($)).weather).toBe('PRs ☂ #7 ✎ #8 updated just now')
+    expect(logs).toEqual([])
+  })
+
+  test('a PR whose first lookup fails is left out until one succeeds', async ($, on) => {
+    let isFailing = true
+    const { clock } = world(on, { ledger: [ready('a', 7), ready('b', 8)], fails: argv => isFailing && argv[2] === 'view' && argv[3] === url(8) })
+    await start($)
+    await clock.settle()
+    expect((await band($)).weather).toBe('PRs ☀ #7 updated just now')
+    isFailing = false
+    await clock.advance(3 * MINUTE)
+    expect((await band($)).weather).toBe('PRs ☀ #7 ☀ #8 updated just now')
   })
 
   test('no open PRs still leaves the buttons', async ($, on) => {
@@ -539,6 +574,17 @@ describe('setup', () => {
   test('outside a firstmate session it draws and polls nothing', async ($, on) => {
     const { clock, logs, runs } = world(on, { isFirstmate: false, ledger: [ready('a', 7)] })
     await start($, '/home/me/webapp')
+    await clock.settle()
+    await clock.advance(9 * MINUTE)
+    expect((await band($)).weather).toBe(undefined)
+    expect(runs).toEqual([])
+    expect(logs).toEqual([])
+    expect(await command($, 'refresh')).toBe('PR weather is not active in this session.')
+  })
+
+  test('a session no one is at polls and registers nothing', async ($, on) => {
+    const { clock, logs, runs } = world(on, { ledger: [ready('a', 7)] })
+    await $.session.start({ cwd: HOME, surface: null, isInteractive: false })
     await clock.settle()
     await clock.advance(9 * MINUTE)
     expect((await band($)).weather).toBe(undefined)

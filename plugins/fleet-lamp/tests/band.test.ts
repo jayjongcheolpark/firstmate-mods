@@ -20,12 +20,23 @@ const BAND = {
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
+const ANCESTORS = [
+  { dir: '/work', name: 'AGENTS.md', content: '# Some other project', parts: [] },
+  { dir: HOME, name: 'AGENTS.md', content: '# Firstmate\n\nThe supervisor contract.', parts: [] },
+]
+
 /** A firstmate home in memory: the files the mod may read, and the calls it made. */
-function world(on: On, files: Record<string, string>) {
+function world(on: On, files: Record<string, string>, ancestors = ANCESTORS) {
   const logs: string[] = []
+  // Every path the mod looked at, and every command it ran.
+  const touched: string[] = []
   const exists = (path: string) => path in files || Object.keys(files).some(file => file.startsWith(`${path}/`))
-  on('fs.exists', ($, e) => ({ value: exists(e.path) }))
+  on('fs.exists', ($, e) => {
+    touched.push(e.path)
+    return { value: exists(e.path) }
+  })
   on('fs.stat', ($, e) => {
+    touched.push(e.path)
     if (!exists(e.path)) {
       throw new Error(`ENOENT: ${e.path}`)
     }
@@ -34,18 +45,18 @@ function world(on: On, files: Record<string, string>) {
     return { value: { kind: isFile ? 'file' : 'dir', size, mtimeMs: 0, isLink: false } }
   })
   on('fs.read', ($, e) => {
+    touched.push(e.path)
     if (!(e.path in files)) {
       throw new Error(`ENOENT: ${e.path}`)
     }
     return { value: files[e.path] ?? '' }
   })
-  on('fs.ancestors', () => ({
-    value: [
-      { dir: '/work', name: 'AGENTS.md', content: '# Some other project', parts: [] },
-      { dir: HOME, name: 'AGENTS.md', content: '# Firstmate\n\nThe supervisor contract.', parts: [] },
-    ],
-  }))
+  on('fs.ancestors', () => {
+    touched.push('AGENTS.md')
+    return { value: ancestors }
+  })
   on('process.run', ($, e) => {
+    touched.push(e.argv.join(' '))
     const [tool, flag, from, path] = e.argv
     expect([tool, flag]).toEqual(['tail', '-c'])
     const bytes = encoder.encode(files[path ?? ''] ?? '')
@@ -69,6 +80,7 @@ function world(on: On, files: Record<string, string>) {
   }
   return {
     logs,
+    touched,
     clock,
     append: (...records: object[]) => appendTo(LEDGER, ...records),
     appendTo,
@@ -168,6 +180,32 @@ describe('the band', () => {
     await fm.clock.advance(6000)
     expect(await bandText($)).toEqual(['', ''])
     expect(fm.logs.filter(text => text.includes(`touch ${FLAG}`))).toHaveLength(1)
+  })
+
+  test('a session no one is at follows nothing', async ($, on) => {
+    const files: Record<string, string> = { [FLAG]: '', [LEDGER]: '' }
+    const fm = world(on, files)
+    await $.session.start({ cwd: `${HOME}/projects/x`, surface: null, isInteractive: false })
+    fm.append(status('t', 'blocked', ' x'))
+    await fm.clock.advance(120_000)
+    expect(fm.touched).toEqual([])
+    expect(fm.logs).toEqual([])
+  })
+
+  test('only an AGENTS.md headed # Firstmate marks the home, not one that just names it', async ($, on) => {
+    const project = `${HOME}/projects/x`
+    const files: Record<string, string> = {
+      [FLAG]: '',
+      [LEDGER]: '',
+      [`${project}/config/fleet-ledger`]: '',
+      [`${project}/state/fleet-ledger.jsonl`]: '',
+    }
+    const fm = world(on, files, [...ANCESTORS, { dir: project, name: 'AGENTS.md', content: '# Web app\n\nWorked on by a firstmate fleet.', parts: [] }])
+    await start($)
+    fm.appendTo(`${project}/state/fleet-ledger.jsonl`, status('wrong', 'failed', ' not the fleet'))
+    fm.append(status('t', 'blocked', ' x'))
+    await fm.clock.advance(2000)
+    expect((await bandText($))[0]).toBe('● t blocked: x')
   })
 
   test('the home option overrides the walk', { options: { home: '/elsewhere/fm/' } }, async ($, on) => {
