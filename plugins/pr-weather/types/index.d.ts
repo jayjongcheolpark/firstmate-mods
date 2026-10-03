@@ -8,6 +8,8 @@ export type Pr = {
   ci: Ci
   // A workflow run on the head commit waits at conclusion action_required.
   isHeld: boolean
+  // GitHub's mergeable is CONFLICTING; UNKNOWN (still computing) is not a conflict.
+  isConflicting: boolean
 }
 
 // auto polls on the interval; manual refreshes only when asked.

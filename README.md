@@ -115,7 +115,7 @@ The rules are pure functions in `plugins/fleet-lamp/hooks/rules.ts`, and the one
 A band above the prompt with the CI weather of the PRs your firstmate fleet is working on, one glyph per PR:
 
 ```text
-PRs ☂ #7 ↯ #9 ✎ #10 ☀ #12 +2 more updated 2m ago [ ↻ ] [ auto ]
+PRs ☂ #7 ↯ #9 ⚔ #11 ✎ #10 ☀ #12 +2 more updated 2m ago [ ↻ ] [ auto ]
 ```
 
 ### What it shows
@@ -124,6 +124,7 @@ PRs ☂ #7 ↯ #9 ✎ #10 ☀ #12 +2 more updated 2m ago [ ↻ ] [ auto ]
 | --- | --- |
 | ↯ (magenta) | A workflow run on the PR's head commit is held for approval: a human has to approve it. |
 | ☂ (red) | A check failed, was cancelled or timed out. |
+| ⚔ (red) | The PR has merge conflicts with its base branch. While GitHub is still computing mergeability, the PR shows its CI glyph. |
 | ☁ (yellow) | Checks are pending, queued or in progress. |
 | ✎ (gray) | The PR is a draft. |
 | ☀ (green) | Every check passed. |

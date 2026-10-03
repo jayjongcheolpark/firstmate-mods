@@ -1,6 +1,6 @@
 {
   "name": "pr-weather",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "The CI weather of your firstmate fleet's open PRs, one glyph per PR in the band above the prompt",
   "author": { "name": "Jay Park" },
   "homepage": "https://github.com/jayjongcheolpark/firstmate-mods",

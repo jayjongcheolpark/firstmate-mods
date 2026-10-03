@@ -17,14 +17,23 @@ import {
   terminalDrawsLinks,
 } from '../hooks/weather'
 
-const base: Pr = { number: 1, url: 'https://github.com/o/r/pull/1', isDraft: false, ci: 'passed', isHeld: false }
+const base: Pr = { number: 1, url: 'https://github.com/o/r/pull/1', isDraft: false, ci: 'passed', isHeld: false, isConflicting: false }
 
 describe('glyph priority', () => {
   test('held for approval wins over everything', async () => {
-    expect(glyph({ ...base, isHeld: true, ci: 'failed', isDraft: true })).toBe(GLYPHS.held)
+    expect(glyph({ ...base, isHeld: true, ci: 'failed', isDraft: true, isConflicting: true })).toBe(GLYPHS.held)
   })
-  test('failed beats running and draft', async () => {
-    expect(glyph({ ...base, ci: 'failed', isDraft: true })).toBe(GLYPHS.failed)
+  test('failed beats conflicting, running and draft', async () => {
+    expect(glyph({ ...base, ci: 'failed', isDraft: true, isConflicting: true })).toBe(GLYPHS.failed)
+  })
+  test('conflicting beats running, draft and passed', async () => {
+    expect(glyph({ ...base, isConflicting: true, ci: 'running', isDraft: true })).toBe(GLYPHS.conflicting)
+    expect(glyph({ ...base, isConflicting: true })).toBe(GLYPHS.conflicting)
+    expect(glyph({ ...base, isConflicting: true, ci: 'none' })).toBe(GLYPHS.conflicting)
+  })
+  test('the conflict glyph is red like failed CI, with its own mark', async () => {
+    expect(GLYPHS.conflicting.color).toBe('red')
+    expect(GLYPHS.conflicting.mark).not.toBe(GLYPHS.failed.mark)
   })
   test('running beats draft', async () => {
     expect(glyph({ ...base, ci: 'running', isDraft: true })).toBe(GLYPHS.running)

@@ -25,7 +25,7 @@ const entry = (id: string, home: string) => `- ${id} - Own ${id} work. (home: ${
 const remoteEntry = (id: string, home: string) =>
   `- ${id} - Own ${id} work. (host: box; root: /srv; home: ${home}; scope: ${id}; projects: ${id}; added 2026-08-05)`
 
-type View = { state?: string; isDraft?: boolean; checks?: object[]; held?: boolean }
+type View = { state?: string; isDraft?: boolean; checks?: object[]; held?: boolean; mergeable?: string }
 
 type World = {
   isFirstmate?: boolean
@@ -120,7 +120,7 @@ function world(on: On, w: World) {
     if (argv[1] === 'pr' && argv[2] === 'view') {
       const n = Number(/\/pull\/(\d+)$/.exec(argv[3] ?? '')?.[1])
       const v = views[n] ?? {}
-      return ok(JSON.stringify({ number: n, url: url(n), state: v.state ?? 'OPEN', isDraft: v.isDraft ?? false, headRefOid: `sha${n}`, statusCheckRollup: v.checks ?? [success] }))
+      return ok(JSON.stringify({ number: n, url: url(n), state: v.state ?? 'OPEN', isDraft: v.isDraft ?? false, headRefOid: `sha${n}`, statusCheckRollup: v.checks ?? [success], mergeable: v.mergeable ?? 'MERGEABLE' }))
     }
     if (argv[1] === 'pr' && argv[2] === 'list') {
       return ok(JSON.stringify([{ number: 5, url: url(5), state: 'OPEN', isDraft: true, headRefOid: 'sha5', statusCheckRollup: [success] }]))
@@ -191,6 +191,29 @@ describe('pr-weather band', () => {
       expect(drawn.mode).toBe('auto')
       expect(drawn.hasEngine).toBe(true)
     }
+  })
+
+  test('a PR with merge conflicts shows the red conflict glyph; one GitHub is still computing does not', async ($, on) => {
+    const { clock, runs } = world(on, {
+      env: { TERM_PROGRAM: 'ghostty' },
+      ledger: [ready('a', 7), ready('b', 8), ready('c', 9)],
+      views: { 7: { mergeable: 'CONFLICTING' }, 8: { mergeable: 'UNKNOWN' }, 9: { mergeable: 'CONFLICTING', checks: [failure] } },
+    })
+    await start($)
+    await clock.settle()
+    for (const surface of SURFACES) {
+      const drawn = await band($, surface)
+      expect(drawn.weather).toBe('PRs ⚔ #7 ☀ #8 ☂ #9 updated just now')
+      expect(drawn.links).toEqual([url(7), url(8), url(9)])
+    }
+    const ui = await $.ui.mount({ plugin: 'pr-weather', surface: 'terminal', component: 'AbovePrompt', props: PROPS })
+    const links = await ui.findAll({ type: 'Link' })
+    expect(links.map(link => link.props.label)).toEqual(['⚔', '☀', '☂'])
+    await ui.unmount()
+    // The same one gh call per PR asks for mergeable: no extra lookups.
+    const views = runs.filter(argv => argv[0] === 'gh' && argv[2] === 'view')
+    expect(views).toHaveLength(3)
+    for (const argv of views) expect(argv.at(-1)).toContain('mergeable')
   })
 
   test('a terminal that cannot draw hyperlinks gets plain numbers; desktop always links', async ($, on) => {

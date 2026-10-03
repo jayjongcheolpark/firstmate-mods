@@ -34,7 +34,7 @@ const now = atom({ plugin: 'pr-weather', key: 'now' } as const, 0)
 const DEBOUNCE_MS = 30_000
 
 const TIMEOUT_MS = 30_000
-const PR_FIELDS = 'number,url,state,isDraft,headRefOid,statusCheckRollup'
+const PR_FIELDS = 'number,url,state,isDraft,headRefOid,statusCheckRollup,mergeable'
 // The records prsFromLedger folds: PR events, and done statuses that name a PR.
 const LEDGER_EVENTS = '"event": *"task\\.(pr_ready|merged|cleaned_up)"|"state": *"done".*https://[^"]*/pull/[0-9]+'
 
@@ -58,6 +58,7 @@ type PrView = {
   isDraft: boolean
   headRefOid: string
   statusCheckRollup?: RollupItem[] | null
+  mergeable?: string
 }
 
 const NO_GH = 'install the GitHub CLI (gh) to see PR weather'
@@ -107,6 +108,7 @@ async function toPr($: EngineInterface, view: PrView): Promise<Pr> {
     isDraft: view.isDraft,
     ci: classifyRollup(view.statusCheckRollup),
     isHeld: await isHeld($, view.url, view.headRefOid),
+    isConflicting: view.mergeable === 'CONFLICTING',
   }
 }
 

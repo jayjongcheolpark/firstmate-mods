@@ -18,7 +18,7 @@
     {
       "name": "pr-weather",
       "description": "The CI weather of the firstmate fleet's open PRs, one glyph per PR above the prompt, with a refresh button and auto or manual refresh.",
-      "version": "0.2.3",
+      "version": "0.2.4",
       "source": "./plugins/pr-weather",
       "category": "productivity"
     }
