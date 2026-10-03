@@ -58,6 +58,7 @@ function world(on: On, w: World) {
   mock.store(on, w.store ?? {})
   mock.env(on, w.env ?? {})
   const logs: string[] = []
+  const debugs: string[] = []
   const runs: string[][] = []
   const copies: string[] = []
   const toasts: string[] = []
@@ -81,7 +82,7 @@ function world(on: On, w: World) {
     return { value: w.registry }
   })
   on('ui.log', ($, e) => {
-    logs.push(e.text)
+    ;(e.to === 'debug' ? debugs : logs).push(e.text)
     return { value: undefined }
   })
   on('ui.copy', ($, e) => {
@@ -139,7 +140,7 @@ function world(on: On, w: World) {
   // The browser openers run, each as its argv.
   const opens = () => runs.filter(argv => argv[0] === 'open' || argv[0] === 'xdg-open')
 
-  return { clock, logs, runs, rounds, copies, toasts, opens }
+  return { clock, logs, debugs, runs, rounds, copies, toasts, opens }
 }
 
 async function start($: Engine, cwd = HOME) {
@@ -312,14 +313,19 @@ describe('pr-weather band', () => {
 describe('pressing a PR', () => {
   const opened = () => ok('')
 
-  test('a local macOS session opens it in the browser', async ($, on) => {
-    const { clock, opens, copies, toasts } = world(on, { ledger: [ready('a', 7)], opener: opened })
+  test('a local macOS session opens it in the browser, says so, and logs the press', async ($, on) => {
+    const { clock, opens, copies, toasts, logs, debugs } = world(on, { ledger: [ready('a', 7)], opener: opened })
     await start($)
     await clock.settle()
     await press($, `pr:${url(7)}`)
     expect(opens()).toEqual([['open', url(7)]])
     expect(copies).toEqual([])
-    expect(toasts).toEqual([])
+    expect(toasts).toEqual(['Opened PR #7'])
+    expect(debugs).toEqual([
+      `pr-weather press #7 ${url(7)} opener=none pressed`,
+      `pr-weather press #7 ${url(7)} opener=["open","${url(7)}"] exit=0 stderr=""`,
+    ])
+    expect(logs).toEqual([])
   })
 
   test('a local Linux desktop opens it with xdg-open', async ($, on) => {
@@ -332,13 +338,14 @@ describe('pressing a PR', () => {
   })
 
   test('a remote session copies the URL instead and says so', async ($, on) => {
-    const { clock, opens, copies, toasts } = world(on, { ledger: [ready('a', 7)], env: { SSH_CONNECTION: '10.0.0.2 51000 10.0.0.9 22' }, opener: opened })
+    const { clock, opens, copies, toasts, debugs } = world(on, { ledger: [ready('a', 7)], env: { SSH_CONNECTION: '10.0.0.2 51000 10.0.0.9 22' }, opener: opened })
     await start($)
     await clock.settle()
     await press($, `pr:${url(7)}`)
     expect(opens()).toEqual([])
     expect(copies).toEqual([url(7)])
     expect(toasts).toEqual(['Copied PR #7 URL'])
+    expect(debugs.at(-1)).toBe(`pr-weather press #7 ${url(7)} opener=none copy=no-local-browser`)
   })
 
   test('a Linux server without a desktop copies the URL', async ($, on) => {
@@ -351,22 +358,34 @@ describe('pressing a PR', () => {
     expect(toasts).toEqual(['Copied PR #7 URL'])
   })
 
-  test('an opener that fails or is missing falls back to the copy', async ($, on) => {
-    const { clock, opens, copies, toasts } = world(on, { ledger: [ready('a', 7), ready('b', 8)], system: 'Linux', env: { DISPLAY: ':0' } })
+  test('an opener that cannot run says its error, then falls back to the copy', async ($, on) => {
+    const { clock, opens, copies, toasts, debugs } = world(on, { ledger: [ready('a', 7), ready('b', 8)], system: 'Linux', env: { DISPLAY: ':0' } })
     await start($)
     await clock.settle()
     await press($, `pr:${url(7)}`)
     expect(copies).toEqual([url(7)])
-    expect(toasts).toEqual(['Copied PR #7 URL'])
+    // The test engine answers a throwing process.run with its own words.
+    expect(toasts).toEqual(['xdg-open failed: no implementation for process.run; copied PR #7 URL'])
     expect(opens()).toEqual([['xdg-open', url(7)]])
+    expect(debugs.at(-1)).toBe(`pr-weather press #7 ${url(7)} opener=["xdg-open","${url(7)}"] error="no implementation for process.run"`)
   })
 
-  test('an opener exiting non-zero falls back to the copy', async ($, on) => {
-    const { clock, copies } = world(on, { ledger: [ready('a', 7)], opener: () => exit(1, 'LSOpenURLsWithRole() failed') })
+  test('an opener exiting non-zero says its exit code, then falls back to the copy', async ($, on) => {
+    const { clock, copies, toasts, debugs } = world(on, { ledger: [ready('a', 7)], opener: () => exit(1, 'LSOpenURLsWithRole() failed\n') })
     await start($)
     await clock.settle()
     await press($, `pr:${url(7)}`)
     expect(copies).toEqual([url(7)])
+    expect(toasts).toEqual(['open exited 1; copied PR #7 URL'])
+    expect(debugs.at(-1)).toBe(`pr-weather press #7 ${url(7)} opener=["open","${url(7)}"] exit=1 stderr="LSOpenURLsWithRole() failed"`)
+  })
+
+  test('a failed opener and a failed copy toast the reason and the URL', async ($, on) => {
+    const { clock, toasts } = world(on, { ledger: [ready('a', 7)], opener: () => exit(1), canCopy: false })
+    await start($)
+    await clock.settle()
+    await press($, `pr:${url(7)}`)
+    expect(toasts).toEqual([`open exited 1; ${url(7)}`])
   })
 
   test('when the copy fails too, the toast shows the URL itself', async ($, on) => {
