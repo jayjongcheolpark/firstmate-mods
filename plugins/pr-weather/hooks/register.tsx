@@ -19,8 +19,8 @@ import {
   terminalDrawsLinks,
 } from './weather'
 import type { Quota, RollupItem } from './weather'
-import { isPrUrl, openerFor } from './open'
-import type { Host } from './open'
+import { isPrUrl, openerFor, openFailure, pressLogLine } from './open'
+import type { Host, OpenResult, RunResult } from './open'
 import { parseSecondMates } from './secondmates'
 import type { SecondMate } from './secondmates'
 
@@ -34,7 +34,7 @@ const now = atom({ plugin: 'pr-weather', key: 'now' } as const, 0)
 const DEBOUNCE_MS = 30_000
 
 const TIMEOUT_MS = 30_000
-const PR_FIELDS = 'number,url,state,isDraft,headRefOid,statusCheckRollup'
+const PR_FIELDS = 'number,url,state,isDraft,headRefOid,statusCheckRollup,mergeable'
 // The records prsFromLedger folds: PR events, and done statuses that name a PR.
 const LEDGER_EVENTS = '"event": *"task\\.(pr_ready|merged|cleaned_up)"|"state": *"done".*https://[^"]*/pull/[0-9]+'
 
@@ -58,6 +58,7 @@ type PrView = {
   isDraft: boolean
   headRefOid: string
   statusCheckRollup?: RollupItem[] | null
+  mergeable?: string
 }
 
 const NO_GH = 'install the GitHub CLI (gh) to see PR weather'
@@ -107,6 +108,7 @@ async function toPr($: EngineInterface, view: PrView): Promise<Pr> {
     isDraft: view.isDraft,
     ci: classifyRollup(view.statusCheckRollup),
     isHeld: await isHeld($, view.url, view.headRefOid),
+    isConflicting: view.mergeable === 'CONFLICTING',
   }
 }
 
@@ -222,22 +224,38 @@ async function readHost($: EngineInterface): Promise<Host> {
   return { system, isRemote, hasDisplay }
 }
 
-// Opens the PR in this machine's browser; where there is none to open, or it fails,
-// copies its URL to the clipboard of the surface pressed on and says so.
+// Opens the PR in this machine's browser and says so; where there is none to open, or it
+// fails, copies its URL to the clipboard of the surface pressed on and says why.
+// Each step of a press leaves a pressLogLine in the debug log.
+const logPress = ($: EngineInterface, pr: Pr, opener: readonly string[] | null, result: OpenResult) =>
+  $.ui.log(pressLogLine(pr, opener, result), { to: 'debug' })
+
 async function openPr($: EngineInterface, pr: Pr, host: Host, surface: RenderSurface): Promise<void> {
+  const log = (opener: readonly string[] | null, result: OpenResult) => logPress($, pr, opener, result)
   if (!isPrUrl(pr.url)) {
+    log(null, { kind: 'refused' })
     $.ui.toast(`PR #${pr.number} has no GitHub URL to open`)
     return
   }
   const opener = openerFor(host, pr.url)
+  let failure: string | null = null
   if (opener) {
-    const isOpened = await $.process
-      .run(opener, { timeoutMs: OPEN_TIMEOUT_MS })
-      .then(({ exitCode }) => exitCode === 0, () => false)
-    if (isOpened) return
+    const result: RunResult = await $.process.run(opener, { timeoutMs: OPEN_TIMEOUT_MS }).then(
+      ({ exitCode, stderr }) => ({ kind: 'exited', exitCode, stderr }),
+      error => ({ kind: 'threw', error: error instanceof Error ? error.message : String(error) }),
+    )
+    log(opener, result)
+    if (result.kind === 'exited' && result.exitCode === 0) {
+      $.ui.toast(`Opened PR #${pr.number}`)
+      return
+    }
+    failure = openFailure(opener, result)
+  } else {
+    log(null, { kind: 'no-opener' })
   }
   const { isCopied } = await $.ui.copy({ text: pr.url, surface })
-  $.ui.toast(isCopied ? `Copied PR #${pr.number} URL` : pr.url)
+  const copied = isCopied ? `copied PR #${pr.number} URL` : pr.url
+  $.ui.toast(failure ? `${failure}; ${copied}` : isCopied ? `Copied PR #${pr.number} URL` : pr.url)
 }
 
 // What the band's buttons and the /pr-weather command drive, for the session's lifetime.
@@ -358,7 +376,10 @@ export const register: Register = (on, options) => {
       setMode,
       // Reads the mode at press time, so two presses before a redraw both flip it.
       toggleMode: async () => setMode((await read($, status)).mode === 'auto' ? 'manual' : 'auto'),
-      openPr: async (pr, surface) => openPr($, pr, await (host ??= readHost($)), surface),
+      openPr: async (pr, surface) => {
+        logPress($, pr, null, { kind: 'pressed' })
+        await openPr($, pr, await (host ??= readHost($)), surface)
+      },
     }
 
     await $.command.register({ name: 'pr-weather', description: 'Refresh PR weather now, or switch it between auto and manual', argumentHint: 'refresh | mode auto|manual' })

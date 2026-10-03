@@ -115,7 +115,7 @@ The rules are pure functions in `plugins/fleet-lamp/hooks/rules.ts`, and the one
 A band above the prompt with the CI weather of the PRs your firstmate fleet is working on, one glyph per PR:
 
 ```text
-PRs ☂ #7 ↯ #9 ✎ #10 ☀ #12 +2 more updated 2m ago [ ↻ ] [ auto ]
+PRs ☂ #7 ↯ #9 ⚔ #11 ✎ #10 ☀ #12 +2 more updated 2m ago [ ↻ ] [ auto ]
 ```
 
 ### What it shows
@@ -124,6 +124,7 @@ PRs ☂ #7 ↯ #9 ✎ #10 ☀ #12 +2 more updated 2m ago [ ↻ ] [ auto ]
 | --- | --- |
 | ↯ (magenta) | A workflow run on the PR's head commit is held for approval: a human has to approve it. |
 | ☂ (red) | A check failed, was cancelled or timed out. |
+| ⚔ (red) | The PR has merge conflicts with its base branch. While GitHub is still computing mergeability, the PR shows its CI glyph. |
 | ☁ (yellow) | Checks are pending, queued or in progress. |
 | ✎ (gray) | The PR is a draft. |
 | ☀ (green) | Every check passed. |
@@ -149,10 +150,19 @@ Press a PR's `#N` to open it, in any terminal:
 
 What a press does depends on where the session runs:
 
-- **A local Mac** runs `open <url>`, which opens the PR in your default browser.
-- **A local Linux desktop** (with `DISPLAY` or `WAYLAND_DISPLAY` set) runs `xdg-open <url>`.
+- **A local Mac** runs `open <url>`, which opens the PR in your default browser, and shows `Opened PR #N`.
+- **A local Linux desktop** (with `DISPLAY` or `WAYLAND_DISPLAY` set) runs `xdg-open <url>` and shows `Opened PR #N`.
 - **Anywhere else**, the mod copies the PR URL to your clipboard and shows `Copied PR #N URL`. That covers an SSH session (`SSH_CONNECTION`, `SSH_TTY` or `SSH_CLIENT` set) and a Linux server without a desktop, such as one you reach through a terminal multiplexer. In the terminal the copy goes through the terminal's clipboard (OSC 52, as `/copy` does), so it lands on the machine you are sitting at. Paste the URL into your browser.
-- If the opener fails, the mod copies the URL instead. If the copy fails too, the toast shows the URL itself.
+- If the opener fails, the mod copies the URL instead, and the toast says why first: `open exited 1; copied PR #N URL`, or `open failed: <error>; copied PR #N URL`. If the copy fails too, the toast shows the reason and the URL itself.
+
+Each press also writes lines to the Claude Code debug log, which Claude Code writes only when you start it with `claude --debug` or `--debug-file <path>`. Find them with `grep 'pr-weather press'`. The first line shows that the press arrived. The second line shows the opener argv and its result:
+
+```text
+pr-weather press #7 https://github.com/acme/webapp/pull/7 opener=none pressed
+pr-weather press #7 https://github.com/acme/webapp/pull/7 opener=["open","https://github.com/acme/webapp/pull/7"] exit=0 stderr=""
+```
+
+In the second line, `exit=<code> stderr="<text>"` means the opener ran. `error="<message>"` means it could not run, for example a timeout. `opener=none copy=no-local-browser` means the session has no local browser to open.
 
 The mod opens only `https://github.com/<owner>/<repo>/pull/<n>` URLs, runs the opener without a shell, and gives it 10 seconds.
 

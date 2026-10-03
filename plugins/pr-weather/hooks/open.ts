@@ -30,3 +30,34 @@ export function openerFor(host: Host, url: string): string[] | null {
   if (host.system === 'Linux' && host.hasDisplay) return ['xdg-open', url]
   return null
 }
+
+// How the opener went: it ran and exited, or it could not run (missing, timed out).
+export type RunResult = { kind: 'exited'; exitCode: number; stderr: string } | { kind: 'threw'; error: string }
+
+// How a press went: the press reached the plugin, the opener's run, or no opener to run.
+export type OpenResult = RunResult | { kind: 'pressed' } | { kind: 'no-opener' } | { kind: 'refused' }
+
+// A debug log line of one press, to find with `grep 'pr-weather press'`. Each press logs
+// `pressed` as it arrives, then how the open went:
+// pr-weather press #7 https://github.com/o/r/pull/7 opener=none pressed
+// pr-weather press #7 https://github.com/o/r/pull/7 opener=["open","https://github.com/o/r/pull/7"] exit=0 stderr=""
+export function pressLogLine(pr: { number: number; url: string }, opener: readonly string[] | null, result: OpenResult): string {
+  const outcome =
+    result.kind === 'exited'
+      ? `exit=${result.exitCode} stderr=${JSON.stringify(result.stderr.trim())}`
+      : result.kind === 'threw'
+        ? `error=${JSON.stringify(result.error)}`
+        : result.kind === 'pressed'
+          ? 'pressed'
+          : result.kind === 'refused'
+            ? 'refused=not-a-github-pr-url'
+            : 'copy=no-local-browser'
+  return `pr-weather press #${pr.number} ${pr.url} opener=${opener ? JSON.stringify(opener) : 'none'} ${outcome}`
+}
+
+// Why the opener did not open the PR, in a few words for a toast: "open exited 1", "open failed: spawn open ENOENT".
+export function openFailure(opener: readonly string[], result: RunResult): string {
+  const name = opener[0] ?? 'opener'
+  if (result.kind === 'exited') return `${name} exited ${result.exitCode}`
+  return `${name} failed: ${result.error.length > 40 ? `${result.error.slice(0, 39)}…` : result.error}`
+}

@@ -7,16 +7,18 @@ export type Glyph = { mark: string; color: string }
 export const GLYPHS = {
   held: { mark: '↯', color: 'magenta' },
   failed: { mark: '☂', color: 'red' },
+  conflicting: { mark: '⚔', color: 'red' },
   running: { mark: '☁', color: 'yellow' },
   draft: { mark: '✎', color: 'gray' },
   passed: { mark: '☀', color: 'green' },
   none: { mark: '-', color: 'gray' },
 } as const satisfies Record<string, Glyph>
 
-// Held for approval > failed > running > draft > passed (or no checks).
+// Held for approval > failed > conflicting > running > draft > passed (or no checks).
 export function glyph(pr: Pr): Glyph {
   if (pr.isHeld) return GLYPHS.held
   if (pr.ci === 'failed') return GLYPHS.failed
+  if (pr.isConflicting) return GLYPHS.conflicting
   if (pr.ci === 'running') return GLYPHS.running
   if (pr.isDraft) return GLYPHS.draft
   return pr.ci === 'passed' ? GLYPHS.passed : GLYPHS.none
