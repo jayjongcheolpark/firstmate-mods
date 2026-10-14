@@ -47,8 +47,27 @@ describe('glyph priority', () => {
   })
 })
 
-const run = (status: string, conclusion: string | null = null) => ({ __typename: 'CheckRun', status, conclusion })
-const context = (state: string) => ({ __typename: 'StatusContext', state })
+let checkSeq = 0
+const run = (
+  status: string,
+  conclusion: string | null = null,
+  extra: { name?: string; workflowName?: string; startedAt?: string | null; completedAt?: string | null } = {},
+) => ({
+  __typename: 'CheckRun',
+  status,
+  conclusion,
+  name: extra.name ?? `check-${++checkSeq}`,
+  workflowName: extra.workflowName ?? 'CI',
+  startedAt: extra.startedAt ?? null,
+  completedAt: extra.completedAt ?? null,
+})
+const context = (state: string, name?: string, startedAt?: string | null) => ({
+  __typename: 'StatusContext',
+  state,
+  context: name ?? `context-${++checkSeq}`,
+  startedAt: startedAt ?? null,
+})
+const at = (minute: number) => `2026-10-14T12:${String(minute).padStart(2, '0')}:00Z`
 
 describe('rollup classification', () => {
   test('no checks', async () => {
@@ -75,6 +94,48 @@ describe('rollup classification', () => {
   })
   test('success, neutral and skipped pass', async () => {
     expect(classifyRollup([run('COMPLETED', 'SUCCESS'), run('COMPLETED', 'NEUTRAL'), run('COMPLETED', 'SKIPPED'), context('SUCCESS')])).toBe('passed')
+  })
+  test('a cancelled run that a later success replaces passes', async () => {
+    const same = { name: 'No staging merge', workflowName: 'CI' }
+    // The new success is first in the rollup and later in time.
+    expect(classifyRollup([
+      run('COMPLETED', 'SUCCESS', { ...same, startedAt: at(5), completedAt: at(6) }),
+      run('COMPLETED', 'CANCELLED', { ...same, startedAt: at(1), completedAt: at(2) }),
+    ])).toBe('passed')
+    // No times: the later entry in the rollup is the latest run.
+    expect(classifyRollup([
+      run('COMPLETED', 'CANCELLED', same),
+      run('COMPLETED', 'SUCCESS', same),
+    ])).toBe('passed')
+  })
+  test('a success that a later failure replaces fails', async () => {
+    const same = { name: 'No staging merge', workflowName: 'CI' }
+    expect(classifyRollup([
+      run('COMPLETED', 'SUCCESS', { ...same, startedAt: at(1), completedAt: at(2) }),
+      run('COMPLETED', 'FAILURE', { ...same, startedAt: at(5), completedAt: at(6) }),
+    ])).toBe('failed')
+    expect(classifyRollup([
+      run('COMPLETED', 'FAILURE', { ...same, startedAt: at(5), completedAt: at(6) }),
+      run('COMPLETED', 'SUCCESS', { ...same, startedAt: at(1), completedAt: at(2) }),
+    ])).toBe('failed')
+  })
+  test('distinct checks stay separate', async () => {
+    expect(classifyRollup([
+      run('COMPLETED', 'SUCCESS', { name: 'lint', workflowName: 'CI', completedAt: at(3) }),
+      run('COMPLETED', 'FAILURE', { name: 'test', workflowName: 'CI', completedAt: at(1) }),
+    ])).toBe('failed')
+    expect(classifyRollup([
+      run('COMPLETED', 'CANCELLED', { name: 'build', workflowName: 'CI', completedAt: at(1) }),
+      run('COMPLETED', 'SUCCESS', { name: 'build', workflowName: 'Release', completedAt: at(4) }),
+    ])).toBe('failed')
+    expect(classifyRollup([
+      context('FAILURE', 'ci/circleci', at(1)),
+      context('SUCCESS', 'ci/travis', at(4)),
+    ])).toBe('failed')
+    expect(classifyRollup([
+      context('FAILURE', 'ci/circleci', at(1)),
+      context('SUCCESS', 'ci/circleci', at(4)),
+    ])).toBe('passed')
   })
 })
 

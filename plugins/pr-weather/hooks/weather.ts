@@ -24,20 +24,30 @@ export function glyph(pr: Pr): Glyph {
   return pr.ci === 'passed' ? GLYPHS.passed : GLYPHS.none
 }
 
-// One statusCheckRollup entry: a CheckRun carries status and conclusion, a
-// StatusContext carries state.
+// One statusCheckRollup entry, as `gh pr view --json statusCheckRollup` prints it.
+// A CheckRun carries name, workflowName, status and conclusion. A StatusContext
+// carries context and state. startedAt and completedAt place the run in time.
 export type RollupItem = {
   __typename?: string
+  name?: string | null
+  workflowName?: string | null
+  context?: string | null
   status?: string | null
   conclusion?: string | null
   state?: string | null
+  startedAt?: string | null
+  completedAt?: string | null
 }
 
 const FAILED = new Set(['FAILURE', 'ERROR', 'CANCELLED', 'TIMED_OUT', 'STARTUP_FAILURE'])
 const RUNNING = new Set(['PENDING', 'EXPECTED', 'QUEUED', 'IN_PROGRESS', 'WAITING', 'REQUESTED'])
 
+function isStatusContext(item: RollupItem): boolean {
+  return item.__typename === 'StatusContext' || (item.status == null && item.state != null)
+}
+
 function outcome(item: RollupItem): 'failed' | 'running' | 'passed' {
-  if (item.__typename === 'StatusContext' || (item.status == null && item.state != null)) {
+  if (isStatusContext(item)) {
     const state = (item.state ?? '').toUpperCase()
     if (FAILED.has(state)) return 'failed'
     return RUNNING.has(state) ? 'running' : 'passed'
@@ -47,9 +57,54 @@ function outcome(item: RollupItem): 'failed' | 'running' | 'passed' {
   return FAILED.has((item.conclusion ?? '').toUpperCase()) ? 'failed' : 'passed'
 }
 
+// GitHub keeps a superseded run in the rollup. The same check is name plus
+// workflow for a CheckRun, and context for a StatusContext.
+function checkKey(item: RollupItem): string {
+  if (isStatusContext(item)) return `context\0${item.context ?? ''}`
+  return `run\0${item.name ?? ''}\0${item.workflowName ?? ''}`
+}
+
+function stamp(value: string | null | undefined): number | null {
+  if (!value) return null
+  const ms = Date.parse(value)
+  return Number.isNaN(ms) ? null : ms
+}
+
+// The later of the two times gh records. A run still going has only startedAt.
+function when(item: RollupItem): number | null {
+  const times = [stamp(item.startedAt), stamp(item.completedAt)].filter((ms): ms is number => ms != null)
+  return times.length === 0 ? null : Math.max(...times)
+}
+
+// A candidate replaces the kept run when its time is later or equal. With no
+// time on either side, the later entry in the rollup wins.
+function replaces(kept: RollupItem, candidate: RollupItem): boolean {
+  const keptAt = when(kept)
+  const candidateAt = when(candidate)
+  if (keptAt != null && candidateAt != null) return candidateAt >= keptAt
+  return true
+}
+
+function latestRuns(items: readonly RollupItem[]): RollupItem[] {
+  const indexByKey = new Map<string, number>()
+  const latest: RollupItem[] = []
+  for (const item of items) {
+    const key = checkKey(item)
+    const index = indexByKey.get(key)
+    if (index === undefined) {
+      indexByKey.set(key, latest.length)
+      latest.push(item)
+      continue
+    }
+    const kept = latest[index]
+    if (kept && replaces(kept, item)) latest[index] = item
+  }
+  return latest
+}
+
 export function classifyRollup(items: readonly RollupItem[] | null | undefined): Ci {
   if (!items || items.length === 0) return 'none'
-  const outcomes = items.map(outcome)
+  const outcomes = latestRuns(items).map(outcome)
   if (outcomes.includes('failed')) return 'failed'
   if (outcomes.includes('running')) return 'running'
   return 'passed'
