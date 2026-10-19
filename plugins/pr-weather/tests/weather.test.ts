@@ -193,6 +193,21 @@ describe('fleet ledger', () => {
     const text = [done('a', ` PR ${A}`), done('b', ` PR ${B}`), done('a', ` PR ${A} merged`), done('b', ` PR ready: ${B} landed on main`)].join('\n')
     expect(prsFromLedger(text)).toEqual([])
   })
+  test('a ready report that says the PR is not merged keeps it', async () => {
+    const text = [
+      done('a', `PR ready: ${A} staging and PR 1839's branch untouched; not merged.`),
+      done('b', `PR ready: ${B} not yet merged, unmerged, never merged, not landed. Do not merge`),
+      done('c', `PR ready: ${C} not merged or landed`),
+    ].join('\n')
+    expect(prsFromLedger(text)).toEqual([A, B, C])
+  })
+  test('a ready report that truly says merged still drops the task', async () => {
+    const text = [
+      done('a', `PR ready: ${A} staging and PR 1839's branch untouched; not merged.`),
+      done('a', `PR ready: ${A} merged or landed`),
+    ].join('\n')
+    expect(prsFromLedger(text)).toEqual([])
+  })
   test('a done status that only mentions a PR, or another state, leaves it alone', async () => {
     const text = [
       done('a', ` report written; see ${A} for context`),

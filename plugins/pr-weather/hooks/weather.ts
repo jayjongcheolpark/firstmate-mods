@@ -113,13 +113,20 @@ export function classifyRollup(items: readonly RollupItem[] | null | undefined):
 // A done status that reports a ready PR, and one that reports it landed: fleet-lamp's green rule.
 const READY_PATTERNS = [/PR ready: https:\/\//, /^\s*PR https:\/\//, /child \S+ done: PR https:\/\//]
 const LANDED = /\b(landed|merged)\b/
+
+// Drop "not merged", "not yet merged", "never merged", and "not merged or landed"
+// before the landed test. "unmerged" never matches LANDED: there is no word
+// boundary before "merged".
+function withoutNegatedLanded(body: string): string {
+  return body.replace(/\b(?:not|never)\b(?:\s+\w+){0,2}\s+(?:landed|merged)\b(?:\s+or\s+(?:landed|merged)\b)?/gi, ' ')
+}
 const PR_URL = /https:\/\/[^\s"]+\/pull\/\d+/
 
 // The fleet's PR URLs from fleet-ledger.jsonl text (docs/fleet-ledger.md in
 // firstmate): task.pr_ready, or a done task.status that reports a ready PR,
 // sets the task's PR (a later one replaces it); task.merged, task.cleaned_up,
-// or a done status that reports the PR landed or merged drops it. Torn or
-// foreign lines are skipped.
+// or a done status that reports the PR landed or merged drops it. A negated
+// report ("not merged", "never landed") keeps it. Torn or foreign lines are skipped.
 export function prsFromLedger(text: string): string[] {
   const byTask = new Map<string, string>()
   for (const line of text.split('\n')) {
@@ -138,7 +145,7 @@ export function prsFromLedger(text: string): string[] {
       const body = record.text
       const url = PR_URL.exec(body)?.[0]
       if (!url || !READY_PATTERNS.some(pattern => pattern.test(body))) continue
-      if (LANDED.test(body)) byTask.delete(record.task)
+      if (LANDED.test(withoutNegatedLanded(body))) byTask.delete(record.task)
       else byTask.set(record.task, url)
     }
   }
