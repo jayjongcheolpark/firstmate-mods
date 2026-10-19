@@ -114,10 +114,11 @@ export function classifyRollup(items: readonly RollupItem[] | null | undefined):
 const READY_PATTERNS = [/PR ready: https:\/\//, /^\s*PR https:\/\//, /child \S+ done: PR https:\/\//]
 const LANDED = /\b(landed|merged)\b/
 
-// Drop "not merged", "not yet merged", and "never merged" before the landed test.
-// "unmerged" never matches LANDED: there is no word boundary before "merged".
+// Drop "not merged", "not yet merged", "never merged", and "not merged or landed"
+// before the landed test. "unmerged" never matches LANDED: there is no word
+// boundary before "merged".
 function withoutNegatedLanded(body: string): string {
-  return body.replace(/\b(?:not|never)\b(?:\s+\w+){0,2}\s+(?:landed|merged)\b/gi, ' ')
+  return body.replace(/\b(?:not|never)\b(?:\s+\w+){0,2}\s+(?:landed|merged)\b(?:\s+or\s+(?:landed|merged)\b)?/gi, ' ')
 }
 const PR_URL = /https:\/\/[^\s"]+\/pull\/\d+/
 

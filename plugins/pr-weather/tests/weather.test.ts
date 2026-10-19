@@ -197,13 +197,14 @@ describe('fleet ledger', () => {
     const text = [
       done('a', `PR ready: ${A} staging and PR 1839's branch untouched; not merged.`),
       done('b', `PR ready: ${B} not yet merged, unmerged, never merged, not landed. Do not merge`),
+      done('c', `PR ready: ${C} not merged or landed`),
     ].join('\n')
-    expect(prsFromLedger(text)).toEqual([A, B])
+    expect(prsFromLedger(text)).toEqual([A, B, C])
   })
   test('a ready report that truly says merged still drops the task', async () => {
     const text = [
       done('a', `PR ready: ${A} staging and PR 1839's branch untouched; not merged.`),
-      done('a', `PR ready: ${A} merged`),
+      done('a', `PR ready: ${A} merged or landed`),
     ].join('\n')
     expect(prsFromLedger(text)).toEqual([])
   })
