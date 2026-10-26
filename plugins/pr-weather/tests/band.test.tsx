@@ -7,6 +7,8 @@ const LEDGER = `${HOME}/state/fleet-ledger.jsonl`
 const SURFACES = ['terminal', 'desktop'] as const
 const PROPS = { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 9 }, view: {} }
 const MINUTE = 60_000
+// $.process.run keeps this many bytes of standard output.
+const STDOUT_CAP = 4_194_304
 // The mocked clock starts here, so GitHub's reset times (epoch seconds) line up with it.
 const T0 = 1_790_000_000_000
 
@@ -32,6 +34,8 @@ type World = {
   isRepo?: boolean
   hasLedger?: boolean
   ledger?: string[]
+  // Bytes after the main ledger's last line: a record still being written.
+  partial?: string
   // Second mate homes on this machine and their ledger lines; null: no ledger there.
   mates?: Record<string, string[] | null>
   // data/secondmates.md in the home; absent: no file.
@@ -73,7 +77,14 @@ function world(on: On, w: World) {
   const ledgers: Record<string, string[] | undefined> = { [LEDGER]: w.hasLedger === false ? undefined : (w.ledger ?? []) }
   for (const [home, lines] of Object.entries(mates)) ledgers[`${home}/state/fleet-ledger.jsonl`] = lines ?? undefined
   on('fs.exists', ($, e) => ({ value: e.path === `${HOME}/state` || e.path in mates || ledgers[e.path] !== undefined }))
+  // A ledger's bytes as they stand now: the lines, each ended, and the main ledger's partial record.
+  const bytesOf = (path: string) => {
+    const lines = ledgers[path] ?? []
+    const text = lines.map(line => `${line}\n`).join('') + (path === LEDGER ? (w.partial ?? '') : '')
+    return new TextEncoder().encode(text)
+  }
   on('fs.stat', ($, e) => {
+    if (ledgers[e.path] !== undefined) return { value: { kind: 'file', size: bytesOf(e.path).length, mtimeMs: 0, isLink: false } }
     if (!(e.path in mates)) throw new Error(`ENOENT: ${e.path}`)
     return { value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: false } }
   })
@@ -100,9 +111,13 @@ function world(on: On, w: World) {
   })
   const answer = async (argv: readonly string[]): Promise<ProcessRunResult> => {
     runs.push([...argv])
-    if (argv[0] === 'grep') {
-      const lines = ledgers[argv.at(-1) ?? '']
-      return lines?.length ? ok(lines.join('\n') + '\n') : exit(1)
+    if (argv[0] === 'tail') {
+      const path = argv.at(-1) ?? ''
+      if (ledgers[path] === undefined) return exit(1, `tail: ${path}: No such file or directory`)
+      const rest = bytesOf(path).subarray(Number(argv[2]?.slice(1)) - 1)
+      // A cut inside a multi-byte character drops that character, as the engine's does.
+      const stdout = new TextDecoder().decode(rest.subarray(0, STDOUT_CAP)).replace(/\uFFFD$/, '')
+      return { ...ok(stdout), isStdoutTruncated: rest.length > STDOUT_CAP }
     }
     if (argv[0] === 'git') return w.isRepo === false ? exit(128) : ok('true\n')
     if (argv[0] === 'uname') return ok(`${w.system ?? 'Darwin'}\n`)
@@ -659,6 +674,85 @@ describe('setup', () => {
   })
 })
 
+describe('reading the ledger', () => {
+  const tails = (runs: string[][]) => runs.filter(argv => argv[0] === 'tail').map(argv => argv[2])
+  const size = (lines: string[]) => new TextEncoder().encode(lines.map(line => `${line}\n`).join('')).length
+  const done = (task: string, text: string) => JSON.stringify({ v: 1, ts: 1, event: 'task.status', task, state: 'done', key: null, text })
+
+  test('a ledger whose PR records pass 4 MiB is read in pieces, in order', async ($, on) => {
+    // Each filler is 1.5 MB of three-byte characters, so the 4 MiB cuts fall inside records and characters.
+    const filler = (i: number) => done(`f${i}`, `checked ${url(7)} ${'☀'.repeat(500_000)}`)
+    const ledger = [ready('a', 7), ready('b', 8), ...[0, 1, 2, 3].map(filler), done('a', ` PR ${url(7)} merged`), ready('c', 9)]
+    expect(size(ledger)).toBeGreaterThan(STDOUT_CAP)
+    const { clock, runs } = world(on, { ledger })
+    await start($)
+    await clock.settle()
+    expect((await band($)).weather).toBe('PRs ☀ #8 ☀ #9 updated just now')
+    expect(tails(runs)).toHaveLength(2)
+    expect(tails(runs)[0]).toBe('+1')
+    expect(runs.filter(argv => argv[2] === 'view').map(argv => argv[3])).toEqual([url(8), url(9)])
+  })
+
+  test('a later refresh reads only the appended lines, which add and drop PRs', async ($, on) => {
+    const w: World = { ledger: [ready('a', 7), ready('b', 8), ready('c', 9)] }
+    const { clock, runs } = world(on, w)
+    await start($)
+    await clock.settle()
+    expect((await band($)).weather).toBe('PRs ☀ #7 ☀ #8 ☀ #9 updated just now')
+    const first = size(w.ledger ?? [])
+
+    // Nothing new: no read at all.
+    await clock.advance(3 * MINUTE)
+    expect(tails(runs)).toEqual(['+1'])
+
+    const late = ready('e', 11)
+    w.ledger?.push(JSON.stringify({ v: 1, ts: 2, event: 'task.merged', task: 'a' }), done('b', ` PR ready: ${url(8)} landed on main`), ready('d', 10))
+    w.partial = late.slice(0, 30)
+    await clock.advance(3 * MINUTE)
+    expect((await band($)).weather).toBe('PRs ☀ #9 ☀ #10 updated just now')
+    expect(tails(runs)).toEqual(['+1', `+${first}`])
+
+    // The partial record is read once it is whole.
+    w.partial = undefined
+    w.ledger?.push(late)
+    await clock.advance(3 * MINUTE)
+    expect((await band($)).weather).toBe('PRs ☀ #9 ☀ #10 ☀ #11 updated just now')
+  })
+
+  test('a truncated ledger is read again from the top', async ($, on) => {
+    const w: World = { ledger: [ready('a', 7), ready('b', 8)] }
+    const { clock, runs } = world(on, w)
+    await start($)
+    await clock.settle()
+    w.ledger?.splice(0, Infinity, ready('c', 9))
+    await clock.advance(3 * MINUTE)
+    expect((await band($)).weather).toBe('PRs ☀ #9 updated just now')
+    expect(tails(runs)).toEqual(['+1', '+1'])
+  })
+
+  test('a ledger written again past the old offset is read again from the top', async ($, on) => {
+    const w: World = { ledger: [ready('a', 7)] }
+    const { clock, runs } = world(on, w)
+    await start($)
+    await clock.settle()
+    const first = size(w.ledger ?? [])
+    w.ledger?.splice(0, Infinity, ready('a-task-with-a-longer-name', 9), ready('b', 10))
+    await clock.advance(3 * MINUTE)
+    expect((await band($)).weather).toBe('PRs ☀ #9 ☀ #10 updated just now')
+    expect(tails(runs)).toEqual(['+1', `+${first}`, '+1'])
+  })
+
+  test('the next session goes on from the offset and PRs kept in the store', async ($, on) => {
+    const ledger = [ready('a', 7), ready('b', 8)]
+    const store = { [`ledger:${HOME}`]: { offset: size([ready('a', 7)]), tasks: [['z', url(5)]] } }
+    const { clock, runs } = world(on, { ledger, store })
+    await start($)
+    await clock.settle()
+    expect((await band($)).weather).toBe('PRs ☀ #5 ☀ #8 updated just now')
+    expect(tails(runs)).toEqual([`+${size([ready('a', 7)])}`])
+  })
+})
+
 describe('second mate homes', () => {
   const registry = [entry('constructease', MATE), entry('gone', '/home/me/gone'), remoteEntry('far', '/home/me/far')].join('\n')
 
@@ -672,7 +766,7 @@ describe('second mate homes', () => {
     await clock.settle()
     expect((await band($)).weather).toBe('PRs ☀ #7 ☀ #8 ☀ #9 updated just now')
     expect(runs.filter(argv => argv[2] === 'view').map(argv => argv[3])).toEqual([url(7), url(8), url(9)])
-    expect(runs.filter(argv => argv[0] === 'grep').map(argv => argv.at(-1))).toEqual([LEDGER, `${MATE}/state/fleet-ledger.jsonl`])
+    expect(runs.filter(argv => argv[0] === 'tail').map(argv => argv.at(-1))).toEqual([LEDGER, `${MATE}/state/fleet-ledger.jsonl`])
   })
 
   test("a second mate's done reports count, and a closed PR is left out", async ($, on) => {
@@ -718,7 +812,7 @@ describe('second mate homes', () => {
     await start($)
     await clock.settle()
     expect((await band($)).weather).toBe('PRs ☀ #7 updated just now')
-    expect(runs.filter(argv => argv[0] === 'grep').map(argv => argv.at(-1))).toEqual([LEDGER])
+    expect(runs.filter(argv => argv[0] === 'tail').map(argv => argv.at(-1))).toEqual([LEDGER])
   })
 })
 
