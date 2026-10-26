@@ -11,7 +11,10 @@ import {
   layoutBand,
   MINUTE,
   nextBackoff,
+  foldLedger,
+  foldOf,
   prsFromLedger,
+  prsOf,
   quotaOf,
   repoOf,
   terminalDrawsLinks,
@@ -214,6 +217,30 @@ describe('fleet ledger', () => {
       line({ v: 1, ts: 1, event: 'task.status', task: 'b', state: 'working', key: null, text: ` PR ${B}` }),
     ].join('\n')
     expect(prsFromLedger(text)).toEqual([])
+  })
+  test('folding the ledger piece by piece, at any line, ends where folding it whole does', async () => {
+    const lines = [
+      line({ event: 'task.pr_ready', task: 'a', pr: A }),
+      line({ event: 'task.pr_ready', task: 'b', pr: B }),
+      done('a', ` PR ${A} merged`),
+      done('c', ` PR ready: ${C}`),
+      line({ event: 'task.pr_ready', task: 'a', pr: B }),
+      line({ event: 'task.cleaned_up', task: 'b' }),
+    ]
+    const whole = prsFromLedger(lines.join('\n'))
+    expect(whole).toEqual([C, B])
+    for (let cut = 0; cut <= lines.length; cut += 1) {
+      const byTask = new Map<string, string>()
+      foldLedger(byTask, lines.slice(0, cut).map(text => `${text}\n`).join(''))
+      foldLedger(byTask, lines.slice(cut).map(text => `${text}\n`).join(''))
+      expect(prsOf(byTask)).toEqual(whole)
+    }
+  })
+  test('a stored fold reads back, and anything else reads as none', async () => {
+    expect(foldOf({ offset: 120, tasks: [['a', A]] })).toEqual({ offset: 120, tasks: [['a', A]] })
+    for (const value of [undefined, null, 'x', { offset: -1, tasks: [] }, { offset: 1.5, tasks: [] }, { offset: 3 }, { offset: 3, tasks: [['a']] }, { offset: 3, tasks: [['a', 7]] }]) {
+      expect(foldOf(value)).toBeNull()
+    }
   })
   test('torn lines, blank lines and unknown events are skipped', async () => {
     const text = [line({ event: 'task.status', task: 'a', state: 'done' }), '', line({ event: 'task.pr_ready', task: 'a', pr: A }), '{"v":1,"ev'].join('\n')

@@ -5,6 +5,8 @@ import type { EngineInterface, Register, RenderSurface, Timer } from 'claude-cod
 import type { Mode, Pr, Status } from '../types'
 import {
   classifyRollup,
+  foldLedger,
+  foldOf,
   formatAge,
   formatMinutes,
   glyph,
@@ -13,7 +15,7 @@ import {
   MAX_BACKOFF_MS,
   MINUTE,
   nextBackoff,
-  prsFromLedger,
+  prsOf,
   quotaOf,
   repoOf,
   terminalDrawsLinks,
@@ -35,8 +37,6 @@ const DEBOUNCE_MS = 30_000
 
 const TIMEOUT_MS = 30_000
 const PR_FIELDS = 'number,url,state,isDraft,headRefOid,statusCheckRollup,mergeable'
-// The records prsFromLedger folds: PR events, and done statuses that name a PR.
-const LEDGER_EVENTS = '"event": *"task\\.(pr_ready|merged|cleaned_up)"|"state": *"done".*https://[^"]*/pull/[0-9]+'
 
 // Nothing to show until the person sets something up; the message says what.
 class SetupNeeded extends Error {}
@@ -113,16 +113,41 @@ async function toPr($: EngineInterface, view: PrView): Promise<Pr> {
 }
 
 // The PR URLs in one home's ledger; null when that home has no ledger.
+// The ledger never rotates and $.fs.read takes at most 4 MiB, so the mod folds it
+// as fleet-lamp follows it: tail reads the bytes past the offset kept in the
+// store, each answer at most 4 MiB, until none are left.
 async function ledgerUrls($: EngineInterface, home: string): Promise<string[] | null> {
   const ledger = `${home}/state/fleet-ledger.jsonl`
   if (!(await $.fs.exists(ledger))) return null
-  // grep rather than $.fs.read: the ledger never rotates and can outgrow one read.
-  const { exitCode, stdout, stderr, isStdoutTruncated } = await $.process.run(['grep', '-E', LEDGER_EVENTS, ledger], { timeoutMs: TIMEOUT_MS })
-  if (exitCode === 1) return []
-  if (exitCode !== 0) throw new Error(`grep exited ${exitCode}: ${stderr}`)
-  // A cut answer would miss the newest records, removals among them.
-  if (isStdoutTruncated) throw new Error(`the PR records of ${ledger} pass 4 MiB`)
-  return prsFromLedger(stdout)
+  const { size } = await $.fs.stat(ledger)
+  const key = `ledger:${home}`
+  const saved = foldOf(await $.store.get(key))
+  // A ledger shorter than the offset was truncated (docs/fleet-ledger.md): fold it again from the top.
+  const fold = saved && saved.offset <= size ? saved : { offset: 0, tasks: [] }
+  const byTask = new Map(fold.tasks)
+  let offset = fold.offset
+  const isRead = fold !== saved || offset < size
+  let isMore = offset < size
+  while (isMore) {
+    // From the newline before the offset: a ledger written again past the offset has none there.
+    const from = Math.max(0, offset - 1)
+    const { exitCode, stdout, stderr, isStdoutTruncated } = await $.process.run(['tail', '-c', `+${from + 1}`, ledger], { timeoutMs: TIMEOUT_MS })
+    if (exitCode !== 0) throw new Error(`tail exited ${exitCode}: ${stderr}`)
+    if (offset > 0 && !stdout.startsWith('\n')) {
+      byTask.clear()
+      offset = 0
+      continue
+    }
+    const text = offset > 0 ? stdout.slice(1) : stdout
+    // A partial last record waits for the next read.
+    const complete = text.slice(0, text.lastIndexOf('\n') + 1)
+    if (complete === '' && isStdoutTruncated) throw new Error(`a record of ${ledger} at byte ${offset} passes 4 MiB`)
+    foldLedger(byTask, complete)
+    offset += new TextEncoder().encode(complete).length
+    isMore = isStdoutTruncated
+  }
+  if (isRead) await $.store.set(key, { offset, tasks: [...byTask] })
+  return prsOf(byTask)
 }
 
 // The second mates registered in the home's data/secondmates.md whose homes exist on this machine.

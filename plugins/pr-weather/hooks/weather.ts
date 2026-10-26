@@ -122,13 +122,14 @@ function withoutNegatedLanded(body: string): string {
 }
 const PR_URL = /https:\/\/[^\s"]+\/pull\/\d+/
 
-// The fleet's PR URLs from fleet-ledger.jsonl text (docs/fleet-ledger.md in
-// firstmate): task.pr_ready, or a done task.status that reports a ready PR,
-// sets the task's PR (a later one replaces it); task.merged, task.cleaned_up,
-// or a done status that reports the PR landed or merged drops it. A negated
-// report ("not merged", "never landed") keeps it. Torn or foreign lines are skipped.
-export function prsFromLedger(text: string): string[] {
-  const byTask = new Map<string, string>()
+// Folds fleet-ledger.jsonl text (docs/fleet-ledger.md in firstmate) into the
+// open PR of each task, in ledger order: task.pr_ready, or a done task.status
+// that reports a ready PR, sets the task's PR (a later one replaces it);
+// task.merged, task.cleaned_up, or a done status that reports the PR landed or
+// merged drops it. A negated report ("not merged", "never landed") keeps it.
+// Torn or foreign lines are skipped. Folding a ledger piece by piece, in order,
+// ends where folding it whole does.
+export function foldLedger(byTask: Map<string, string>, text: string): void {
   for (const line of text.split('\n')) {
     let record: { event?: unknown; task?: unknown; pr?: unknown; state?: unknown; text?: unknown }
     try {
@@ -149,7 +150,28 @@ export function prsFromLedger(text: string): string[] {
       else byTask.set(record.task, url)
     }
   }
-  return [...new Set(byTask.values())]
+}
+
+// The PR URLs of a folded ledger, each once.
+export const prsOf = (byTask: ReadonlyMap<string, string>): string[] => [...new Set(byTask.values())]
+
+// The fleet's PR URLs from a whole fleet-ledger.jsonl text.
+export function prsFromLedger(text: string): string[] {
+  const byTask = new Map<string, string>()
+  foldLedger(byTask, text)
+  return prsOf(byTask)
+}
+
+// How far one home's ledger is folded: its byte offset, past the last whole
+// line read, and each task's open PR there, as [task, url] in ledger order.
+export type LedgerFold = { offset: number; tasks: [string, string][] }
+
+// A stored fold, or null when the value is not one (absent, or an older shape).
+export function foldOf(value: unknown): LedgerFold | null {
+  const fold = value as { offset?: unknown; tasks?: unknown } | null | undefined
+  if (typeof fold?.offset !== 'number' || !Number.isInteger(fold.offset) || fold.offset < 0 || !Array.isArray(fold.tasks)) return null
+  const isPair = (pair: unknown) => Array.isArray(pair) && pair.length === 2 && pair.every(part => typeof part === 'string')
+  return fold.tasks.every(isPair) ? { offset: fold.offset, tasks: fold.tasks as [string, string][] } : null
 }
 
 // Where a PR URL lives, for the gh api calls about it.
