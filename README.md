@@ -194,7 +194,7 @@ With the default `fleet` source, the PRs come from firstmate's fleet activity le
 
 - a `task.pr_ready` record adds its PR, and a later one for the same task replaces it;
 - a `done` status record that reports a ready PR does the same, by fleet-lamp's green rule (`PR https://...`, `PR ready: https://...`, `child X done: PR https://...`);
-- a `task.merged` or `task.cleaned_up` record for that task removes it, and so does a `done` record that says the PR `landed` or `merged`;
+- a `task.merged` or `task.cleaned_up` record for that task removes it, and so does a `done` record that names that PR itself as `merged` or `landed` (`PR <url> merged`, `merged PR <url>`), but not one that only says it merged another branch into the PR (`merged main 73ed64aca3`);
 - a PR that GitHub reports as merged or closed is left out.
 
 The ledger is opt-in: create the flag `config/fleet-ledger` in your firstmate home. Until the ledger exists, the band shows nothing, and the mod adds one dim line to the transcript that tells you how to turn it on.
