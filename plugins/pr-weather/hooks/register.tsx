@@ -6,6 +6,7 @@ import type { Mode, Pr, Status } from '../types'
 import {
   classifyRollup,
   foldLedger,
+  FOLD_RULES,
   foldOf,
   formatAge,
   formatMinutes,
@@ -123,7 +124,7 @@ async function ledgerUrls($: EngineInterface, home: string): Promise<string[] | 
   const key = `ledger:${home}`
   const saved = foldOf(await $.store.get(key))
   // A ledger shorter than the offset was truncated (docs/fleet-ledger.md): fold it again from the top.
-  const fold = saved && saved.offset <= size ? saved : { offset: 0, tasks: [] }
+  const fold = saved && saved.offset <= size ? saved : { rules: FOLD_RULES, offset: 0, tasks: [] }
   const byTask = new Map(fold.tasks)
   let offset = fold.offset
   const isRead = fold !== saved || offset < size
@@ -146,7 +147,7 @@ async function ledgerUrls($: EngineInterface, home: string): Promise<string[] | 
     offset += new TextEncoder().encode(complete).length
     isMore = isStdoutTruncated
   }
-  if (isRead) await $.store.set(key, { offset, tasks: [...byTask] })
+  if (isRead) await $.store.set(key, { rules: FOLD_RULES, offset, tasks: [...byTask] })
   return prsOf(byTask)
 }
 

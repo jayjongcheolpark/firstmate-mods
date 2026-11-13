@@ -2,6 +2,8 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On, ProcessRunResult } from 'claude-code'
 
+import { FOLD_RULES } from '../hooks/weather'
+
 const HOME = '/home/me/firstmate'
 const LEDGER = `${HOME}/state/fleet-ledger.jsonl`
 const SURFACES = ['terminal', 'desktop'] as const
@@ -742,9 +744,19 @@ describe('reading the ledger', () => {
     expect(tails(runs)).toEqual(['+1', `+${first}`, '+1'])
   })
 
+  test('a fold kept by older rules is folded again from the top', async ($, on) => {
+    const ledger = [done('a', ` PR ${url(7)} checks green on base main (merged main 73ed64aca3)`), ready('b', 8)]
+    const store = { [`ledger:${HOME}`]: { offset: size(ledger), tasks: [['b', url(8)]] } }
+    const { clock, runs } = world(on, { ledger, store })
+    await start($)
+    await clock.settle()
+    expect((await band($)).weather).toBe('PRs ☀ #7 ☀ #8 updated just now')
+    expect(tails(runs)).toEqual([`+1`])
+  })
+
   test('the next session goes on from the offset and PRs kept in the store', async ($, on) => {
     const ledger = [ready('a', 7), ready('b', 8)]
-    const store = { [`ledger:${HOME}`]: { offset: size([ready('a', 7)]), tasks: [['z', url(5)]] } }
+    const store = { [`ledger:${HOME}`]: { rules: FOLD_RULES, offset: size([ready('a', 7)]), tasks: [['z', url(5)]] } }
     const { clock, runs } = world(on, { ledger, store })
     await start($)
     await clock.settle()

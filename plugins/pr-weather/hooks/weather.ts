@@ -115,14 +115,15 @@ const READY_PATTERNS = [/PR ready: https:\/\//, /^\s*PR https:\/\//, /child \S+ 
 
 // A ready report names its own PR as landed only when "merged" or "landed"
 // sits right after that PR's URL ("PR <url> merged", "<url> was merged") or
-// right before it ("merged PR <url>"). Words elsewhere in the text, such as
-// "merged main 73ed64aca3" or "merged origin/main into the branch", never
-// count, and "<url> not merged" keeps the PR. task.merged and task.cleaned_up
+// right before it ("merged PR <url>"), and, after the URL, is not followed by
+// its own object. So "merged main 73ed64aca3", "<url> - merged origin/main
+// into the branch", and "<url> not merged" keep the PR, and "<url> merged to
+// main" or "<url> landed on main" drop it. task.merged and task.cleaned_up
 // stay the main landed signal; this covers a merge firstmate did not record.
 const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 function namesLanded(body: string, url: string): boolean {
   const pr = escaped(url)
-  const after = new RegExp(`${pr}(?![\\w/])[\\s,:;.)\\]-]*(?:(?:was|is|has been|got|now)\\s+)?(?:landed|merged)\\b`, 'i')
+  const after = new RegExp(`${pr}(?![\\w/])[\\s,:;.)\\]-]*(?:(?:was|is|has been|got|now)\\s+)?(?:landed|merged)\\b(?=\\s*(?:$|[.,;:!?)\\]]|-|(?:to|into|on|in|at|or|and|via|by|upstream|already|today)\\b))`, 'i')
   const before = new RegExp(`\\b(?:landed|merged)\\s+(?:PR\\s+)?${pr}(?![\\w/])`, 'i')
   return after.test(body) || before.test(body)
 }
@@ -169,16 +170,24 @@ export function prsFromLedger(text: string): string[] {
   return prsOf(byTask)
 }
 
-// How far one home's ledger is folded: its byte offset, past the last whole
-// line read, and each task's open PR there, as [task, url] in ledger order.
-export type LedgerFold = { offset: number; tasks: [string, string][] }
+// The version of foldLedger's rules. A fold stored under other rules reads as
+// none, so the ledger is folded again from the top: 2 stopped "merged main"
+// in a ready report from dropping its PR.
+export const FOLD_RULES = 2
 
-// A stored fold, or null when the value is not one (absent, or an older shape).
+// How far one home's ledger is folded: the rules it was folded by, its byte
+// offset, past the last whole line read, and each task's open PR there, as
+// [task, url] in ledger order.
+export type LedgerFold = { rules: number; offset: number; tasks: [string, string][] }
+
+// A stored fold, or null when the value is not one (absent, an older shape, or
+// folded by other rules).
 export function foldOf(value: unknown): LedgerFold | null {
-  const fold = value as { offset?: unknown; tasks?: unknown } | null | undefined
+  const fold = value as { rules?: unknown; offset?: unknown; tasks?: unknown } | null | undefined
+  if (fold?.rules !== FOLD_RULES) return null
   if (typeof fold?.offset !== 'number' || !Number.isInteger(fold.offset) || fold.offset < 0 || !Array.isArray(fold.tasks)) return null
   const isPair = (pair: unknown) => Array.isArray(pair) && pair.length === 2 && pair.every(part => typeof part === 'string')
-  return fold.tasks.every(isPair) ? { offset: fold.offset, tasks: fold.tasks as [string, string][] } : null
+  return fold.tasks.every(isPair) ? { rules: FOLD_RULES, offset: fold.offset, tasks: fold.tasks as [string, string][] } : null
 }
 
 // Where a PR URL lives, for the gh api calls about it.
