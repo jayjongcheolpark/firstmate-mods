@@ -12,6 +12,7 @@ import {
   MINUTE,
   nextBackoff,
   foldLedger,
+  FOLD_RULES,
   foldOf,
   prsFromLedger,
   prsOf,
@@ -211,6 +212,30 @@ describe('fleet ledger', () => {
     ].join('\n')
     expect(prsFromLedger(text)).toEqual([])
   })
+  test('a ready report that merged a branch into the PR keeps it', async () => {
+    const PR2273 = 'https://github.com/ConstructEase/app/pull/2273'
+    const text = [
+      done('a', ` PR ${PR2273} checks green at head 1a2b3c4d5e on base main (merged main 73ed64aca3 incl. #2263; QA passed)`),
+      done('b', ` PR ready: ${B} after I merged origin/main into the branch; landed fixes from #12 are in`),
+      done('a', ` PR ${PR2273} merged main 73ed64aca3, checks green`),
+      done('b', ` PR ready: ${B} - merged origin/main into the branch`),
+      done('c', ` PR ready: ${C} rebased after merged PR ${C}0 and ${C.replace('/9', '/10')} merged`),
+    ].join('\n')
+    expect(prsFromLedger(text)).toEqual([PR2273, B, C])
+  })
+  test('a ready report that names its own PR as merged drops the task', async () => {
+    const text = [
+      done('a', ` PR ${A}`),
+      done('b', ` PR ${B}`),
+      done('c', ` PR ${C}`),
+      done('a', ` PR ${A}: merged`),
+      done('a', ` PR ${A} merged`),
+      done('a', ` PR ${A} merged.`),
+      done('b', ` PR ready: ${B} was merged to main`),
+      done('c', ` PR ready: ${C} reviewed; merged PR ${C} after review`),
+    ].join('\n')
+    expect(prsFromLedger(text)).toEqual([])
+  })
   test('a done status that only mentions a PR, or another state, leaves it alone', async () => {
     const text = [
       done('a', ` report written; see ${A} for context`),
@@ -237,8 +262,8 @@ describe('fleet ledger', () => {
     }
   })
   test('a stored fold reads back, and anything else reads as none', async () => {
-    expect(foldOf({ offset: 120, tasks: [['a', A]] })).toEqual({ offset: 120, tasks: [['a', A]] })
-    for (const value of [undefined, null, 'x', { offset: -1, tasks: [] }, { offset: 1.5, tasks: [] }, { offset: 3 }, { offset: 3, tasks: [['a']] }, { offset: 3, tasks: [['a', 7]] }]) {
+    expect(foldOf({ rules: FOLD_RULES, offset: 120, tasks: [['a', A]] })).toEqual({ rules: FOLD_RULES, offset: 120, tasks: [['a', A]] })
+    for (const value of [undefined, null, 'x', { offset: 120, tasks: [['a', A]] }, { rules: FOLD_RULES - 1, offset: 120, tasks: [['a', A]] }, { offset: -1, tasks: [] }, { offset: 1.5, tasks: [] }, { offset: 3 }, { offset: 3, tasks: [['a']] }, { offset: 3, tasks: [['a', 7]] }]) {
       expect(foldOf(value)).toBeNull()
     }
   })

@@ -110,23 +110,31 @@ export function classifyRollup(items: readonly RollupItem[] | null | undefined):
   return 'passed'
 }
 
-// A done status that reports a ready PR, and one that reports it landed: fleet-lamp's green rule.
+// A done status that reports a ready PR: fleet-lamp's green rule.
 const READY_PATTERNS = [/PR ready: https:\/\//, /^\s*PR https:\/\//, /child \S+ done: PR https:\/\//]
-const LANDED = /\b(landed|merged)\b/
 
-// Drop "not merged", "not yet merged", "never merged", and "not merged or landed"
-// before the landed test. "unmerged" never matches LANDED: there is no word
-// boundary before "merged".
-function withoutNegatedLanded(body: string): string {
-  return body.replace(/\b(?:not|never)\b(?:\s+\w+){0,2}\s+(?:landed|merged)\b(?:\s+or\s+(?:landed|merged)\b)?/gi, ' ')
+// A ready report names its own PR as landed only when "merged" or "landed"
+// sits right after that PR's URL ("PR <url> merged", "<url> was merged") or
+// right before it ("merged PR <url>"), and, after the URL, is not followed by
+// its own object. So "merged main 73ed64aca3", "<url> - merged origin/main
+// into the branch", and "<url> not merged" keep the PR, and "<url> merged to
+// main" or "<url> landed on main" drop it. task.merged and task.cleaned_up
+// stay the main landed signal; this covers a merge firstmate did not record.
+const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+function namesLanded(body: string, url: string): boolean {
+  const pr = escaped(url)
+  const after = new RegExp(`${pr}(?![\\w/])[\\s,:;.)\\]-]*(?:(?:was|is|has been|got|now)\\s+)?(?:landed|merged)\\b(?=\\s*(?:$|[.,;:!?)\\]]|-|(?:to|into|on|in|at|or|and|via|by|upstream|already|today)\\b))`, 'i')
+  const before = new RegExp(`\\b(?:landed|merged)\\s+(?:PR\\s+)?${pr}(?![\\w/])`, 'i')
+  return after.test(body) || before.test(body)
 }
 const PR_URL = /https:\/\/[^\s"]+\/pull\/\d+/
 
 // Folds fleet-ledger.jsonl text (docs/fleet-ledger.md in firstmate) into the
 // open PR of each task, in ledger order: task.pr_ready, or a done task.status
 // that reports a ready PR, sets the task's PR (a later one replaces it);
-// task.merged, task.cleaned_up, or a done status that reports the PR landed or
-// merged drops it. A negated report ("not merged", "never landed") keeps it.
+// task.merged, task.cleaned_up, or a ready report that names that PR itself as
+// merged or landed drops it. Other uses of the words ("merged main into the
+// branch", "not merged") keep it.
 // Torn or foreign lines are skipped. Folding a ledger piece by piece, in order,
 // ends where folding it whole does.
 export function foldLedger(byTask: Map<string, string>, text: string): void {
@@ -146,7 +154,7 @@ export function foldLedger(byTask: Map<string, string>, text: string): void {
       const body = record.text
       const url = PR_URL.exec(body)?.[0]
       if (!url || !READY_PATTERNS.some(pattern => pattern.test(body))) continue
-      if (LANDED.test(withoutNegatedLanded(body))) byTask.delete(record.task)
+      if (namesLanded(body, url)) byTask.delete(record.task)
       else byTask.set(record.task, url)
     }
   }
@@ -162,16 +170,24 @@ export function prsFromLedger(text: string): string[] {
   return prsOf(byTask)
 }
 
-// How far one home's ledger is folded: its byte offset, past the last whole
-// line read, and each task's open PR there, as [task, url] in ledger order.
-export type LedgerFold = { offset: number; tasks: [string, string][] }
+// The version of foldLedger's rules. A fold stored under other rules reads as
+// none, so the ledger is folded again from the top: 2 stopped "merged main"
+// in a ready report from dropping its PR.
+export const FOLD_RULES = 2
 
-// A stored fold, or null when the value is not one (absent, or an older shape).
+// How far one home's ledger is folded: the rules it was folded by, its byte
+// offset, past the last whole line read, and each task's open PR there, as
+// [task, url] in ledger order.
+export type LedgerFold = { rules: number; offset: number; tasks: [string, string][] }
+
+// A stored fold, or null when the value is not one (absent, an older shape, or
+// folded by other rules).
 export function foldOf(value: unknown): LedgerFold | null {
-  const fold = value as { offset?: unknown; tasks?: unknown } | null | undefined
+  const fold = value as { rules?: unknown; offset?: unknown; tasks?: unknown } | null | undefined
+  if (fold?.rules !== FOLD_RULES) return null
   if (typeof fold?.offset !== 'number' || !Number.isInteger(fold.offset) || fold.offset < 0 || !Array.isArray(fold.tasks)) return null
   const isPair = (pair: unknown) => Array.isArray(pair) && pair.length === 2 && pair.every(part => typeof part === 'string')
-  return fold.tasks.every(isPair) ? { offset: fold.offset, tasks: fold.tasks as [string, string][] } : null
+  return fold.tasks.every(isPair) ? { rules: FOLD_RULES, offset: fold.offset, tasks: fold.tasks as [string, string][] } : null
 }
 
 // Where a PR URL lives, for the gh api calls about it.
